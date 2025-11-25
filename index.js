@@ -19,7 +19,7 @@ const app = express();
 // Middlewares
 const allowedOrigins = [
   'http://localhost:5173', // Tu entorno local
-  'https://frontendkorion.netlify.app' // <--- TU URL DE NETLIFY (Copiada de tu imagen)
+  'https://inversionesgenao.korion.do' // <--- TU URL DE NETLIFY (Copiada de tu imagen)
 ];
 
 app.use(cors({
