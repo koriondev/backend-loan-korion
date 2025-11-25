@@ -17,15 +17,18 @@ const PlanSchema = new mongoose.Schema({
 
 const Plan = mongoose.model('Plan', PlanSchema);
 
-mongoose.connect('mongodb://localhost:27017/korionloan')
+// Conexión Base de Datos
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/korionloan';
+
+mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('🔌 Conectado a Mongo. Borrando planes viejos...');
-    
+
     try {
       await Plan.deleteMany({});
-      
+
       console.log('🌱 Insertando 4 Planes Nuevos...');
-      
+
       const plans = [
         {
           code: 'free',

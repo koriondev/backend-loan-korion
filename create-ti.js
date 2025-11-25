@@ -3,7 +3,10 @@ const mongoose = require('mongoose');
 const User = require('./models/User');
 const bcrypt = require('bcryptjs');
 
-mongoose.connect('mongodb://localhost:27017/korionloan')
+// Conexión Base de Datos
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/korionloan';
+
+mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('🦸‍♂️ Creando Super Usuario TI...');
 

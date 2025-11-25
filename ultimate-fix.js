@@ -15,7 +15,10 @@ const Wallet = mongoose.model('Wallet', walletSchema);
 const Loan = mongoose.model('Loan', loanSchema);
 const Plan = mongoose.model('Plan', planSchema);
 
-mongoose.connect('mongodb://localhost:27017/korionloan')
+// Conexión Base de Datos
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/korionloan';
+
+mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('🔥 INICIANDO LIMPIEZA Y REPARACIÓN TOTAL...');
 
@@ -67,7 +70,7 @@ mongoose.connect('mongodb://localhost:27017/korionloan')
 
     // --- VERIFICACIÓN DE LA VERDAD ---
     console.log('\n🔎 VERIFICANDO DATOS EN DB...');
-    
+
     const walletCheck = await Wallet.findOne({ businessId: biz._id });
     const loanCheck = await Loan.countDocuments({ businessId: biz._id });
 

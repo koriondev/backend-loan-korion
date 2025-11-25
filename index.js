@@ -21,7 +21,9 @@ app.use(cors());
 app.use(express.json());
 
 // Conexión Base de Datos
-mongoose.connect('mongodb://localhost:27017/korionloan')
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/korionloan';
+
+mongoose.connect(MONGO_URI) 
   .then(() => console.log('🟢 MongoDB Conectado'))
   .catch(err => console.error('🔴 Error Mongo:', err));
 

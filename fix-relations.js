@@ -3,21 +3,24 @@ const mongoose = require('mongoose');
 const Business = require('./models/Business');
 const User = require('./models/User');
 
-mongoose.connect('mongodb://localhost:27017/korionloan')
+// Conexión Base de Datos
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/korionloan';
+
+mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('🔧 Iniciando reparación de vínculos...');
-    
+
     // 1. Traer todas las empresas
     const businesses = await Business.find();
-    
+
     if (businesses.length === 0) {
-        console.log('❌ No hay empresas. Ejecuta seed-saas.js primero.');
-        process.exit();
+      console.log('❌ No hay empresas. Ejecuta seed-saas.js primero.');
+      process.exit();
     }
 
     for (const biz of businesses) {
       console.log(`\nProcesando empresa: ${biz.name} (${biz._id})`);
-      
+
       // Buscar al dueño por email y forzar el businessId
       const owner = await User.findOne({ email: biz.ownerEmail });
       if (owner) {

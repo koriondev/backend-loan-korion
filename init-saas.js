@@ -5,7 +5,10 @@ const Business = require('./models/Business');
 const bcrypt = require('bcryptjs');
 
 // CONEXIÓN
-mongoose.connect('mongodb://localhost:27017/korionloan')
+// Conexión Base de Datos
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/korionloan';
+
+mongoose.connect(MONGO_URI)
   .then(() => console.log('🔌 Conectado para inicializar SaaS...'))
   .catch(err => console.error(err));
 
