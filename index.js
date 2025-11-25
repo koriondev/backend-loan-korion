@@ -17,13 +17,28 @@ const platformRoutes = require('./routes/platform'); // <--- ESTA FALTABA O ESTA
 const app = express();
 
 // Middlewares
-app.use(cors());
-app.use(express.json());
+const allowedOrigins = [
+  'http://localhost:5173', // Tu entorno local
+  'https://frontendkorion.netlify.app' // <--- TU URL DE NETLIFY (Copiada de tu imagen)
+];
 
+app.use(cors({
+  origin: function (origin, callback) {
+    // Permitir peticiones sin origen (como Postman) o si está en la lista blanca
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Bloqueado por CORS'));
+    }
+  },
+  credentials: true // Permite envío de cookies/headers de autorización
+}));
+
+app.use(express.json());
 // Conexión Base de Datos
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/korionloan';
 
-mongoose.connect(MONGO_URI) 
+mongoose.connect(MONGO_URI)
   .then(() => console.log('🟢 MongoDB Conectado'))
   .catch(err => console.error('🔴 Error Mongo:', err));
 
@@ -44,5 +59,5 @@ app.get('/', (req, res) => {
 });
 
 // Iniciar Servidor
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
