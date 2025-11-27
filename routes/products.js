@@ -8,5 +8,6 @@ router.use(authMiddleware);
 
 router.get('/', productController.getProducts);
 router.post('/', productController.createProduct);
+router.delete('/:id', productController.deleteProduct);
 
 module.exports = router;

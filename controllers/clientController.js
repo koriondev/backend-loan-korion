@@ -9,18 +9,46 @@ exports.createClient = async (req, res) => {
 
     // Si es TI y no tiene negocio, o si hay un error de token
     if (!businessId && req.user.role !== 'ti') {
-        return res.status(403).json({ error: "No tienes permiso para crear clientes en este entorno." });
+      return res.status(403).json({ error: "No tienes permiso para crear clientes en este entorno." });
+    }
+
+    // Parse references if it's a string (from FormData)
+    let references = req.body.references;
+    if (typeof references === 'string') {
+      try {
+        references = JSON.parse(references);
+      } catch (e) {
+        references = [];
+      }
+    }
+
+    // Prepare client data
+    const clientData = {
+      ...req.body,
+      businessId: businessId,
+      references: references || []
+    };
+
+    // Handle uploaded files
+    if (req.files) {
+      if (req.files.idCardFront) {
+        clientData.idCardFront = `/uploads/clients/${req.files.idCardFront[0].filename}`;
+      }
+      if (req.files.idCardBack) {
+        clientData.idCardBack = `/uploads/clients/${req.files.idCardBack[0].filename}`;
+      }
+      if (req.files.photo) {
+        clientData.photo = `/uploads/clients/${req.files.photo[0].filename}`;
+      }
     }
 
     // Creamos el cliente asignándole el ID del negocio automáticamente
-    const newClient = new Client({
-      ...req.body,
-      businessId: businessId // <--- AQUÍ ESTÁ LA CLAVE SAAS
-    });
+    const newClient = new Client(clientData);
 
     const savedClient = await newClient.save();
     res.status(201).json(savedClient);
   } catch (error) {
+    console.error('Error creating client:', error);
     res.status(400).json({ error: error.message });
   }
 };
@@ -46,7 +74,7 @@ exports.getClients = async (req, res) => {
 
     // Búsqueda real
     const clients = await Client.find(req.businessFilter).sort({ createdAt: -1 });
-    
+
     console.log(`✅ Resultados encontrados: ${clients.length}`);
     console.log('------------------------------------------------');
 
@@ -65,7 +93,7 @@ exports.getClientProfile = async (req, res) => {
 
     // Buscamos el cliente asegurando que pertenezca a mi negocio
     const client = await Client.findOne({ _id: id, ...req.businessFilter });
-    
+
     if (!client) return res.status(404).json({ message: "Cliente no encontrado o no pertenece a tu empresa" });
 
     // Historial de Préstamos
@@ -74,17 +102,17 @@ exports.getClientProfile = async (req, res) => {
     // Métricas
     const activeLoans = loans.filter(l => l.status === 'active');
     const paidLoans = loans.filter(l => l.status === 'paid');
-    
+
     const totalBorrowed = loans.reduce((acc, l) => acc + l.amount, 0);
     const totalInterestGenerated = loans.reduce((acc, l) => acc + (l.totalToPay - l.amount), 0);
-    
+
     // Score Crediticio
     let creditScore = 100;
-    const hasLatePayments = activeLoans.some(l => 
-        l.schedule.some(q => new Date(q.dueDate) < new Date() && q.status === 'pending')
+    const hasLatePayments = activeLoans.some(l =>
+      l.schedule.some(q => new Date(q.dueDate) < new Date() && q.status === 'pending')
     );
-    
-    if (hasLatePayments) creditScore -= 20; 
+
+    if (hasLatePayments) creditScore -= 20;
     if (activeLoans.length > 2) creditScore -= 10;
 
     res.json({
@@ -108,18 +136,48 @@ exports.getClientProfile = async (req, res) => {
 // 4. ACTUALIZAR CLIENTE
 exports.updateClient = async (req, res) => {
   try {
+    // Parse references if it's a string (from FormData)
+    let references = req.body.references;
+    if (typeof references === 'string') {
+      try {
+        references = JSON.parse(references);
+      } catch (e) {
+        // Keep existing if parse fails
+      }
+    }
+
+    // Prepare update data
+    const updateData = { ...req.body };
+    if (references) {
+      updateData.references = references;
+    }
+
+    // Handle uploaded files
+    if (req.files) {
+      if (req.files.idCardFront) {
+        updateData.idCardFront = `/uploads/clients/${req.files.idCardFront[0].filename}`;
+      }
+      if (req.files.idCardBack) {
+        updateData.idCardBack = `/uploads/clients/${req.files.idCardBack[0].filename}`;
+      }
+      if (req.files.photo) {
+        updateData.photo = `/uploads/clients/${req.files.photo[0].filename}`;
+      }
+    }
+
     // Solo actualiza si el ID coincide Y pertenece a mi negocio
     const updated = await Client.findOneAndUpdate(
-      { _id: req.params.id, ...req.businessFilter }, 
-      req.body, 
+      { _id: req.params.id, ...req.businessFilter },
+      updateData,
       { new: true }
     );
-    
+
     if (!updated) return res.status(404).json({ message: "No se pudo actualizar (Cliente no encontrado)" });
-    
+
     res.json(updated);
-  } catch (error) { 
-    res.status(500).json({ error: error.message }); 
+  } catch (error) {
+    console.error('Error updating client:', error);
+    res.status(500).json({ error: error.message });
   }
 };
 
@@ -127,13 +185,13 @@ exports.updateClient = async (req, res) => {
 exports.deleteClient = async (req, res) => {
   try {
     const client = await Client.findOne({ _id: req.params.id, ...req.businessFilter });
-    
+
     if (!client) return res.status(404).json({ message: "Cliente no encontrado" });
     if (client.balance > 0) return res.status(400).json({ error: "No se puede borrar cliente con deuda pendiente" });
-    
+
     await Client.findByIdAndDelete(req.params.id);
     res.json({ message: "Cliente eliminado correctamente" });
-  } catch (error) { 
-    res.status(500).json({ error: error.message }); 
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 };

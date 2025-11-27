@@ -2,22 +2,29 @@ const mongoose = require('mongoose');
 
 const ProductSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  description: String,
-  
-  // AHORA ES OPCIONAL (Si es null, es global)
-  businessId: { type: mongoose.Schema.Types.ObjectId, ref: 'Business', required: false },
-  
-  // BANDERA PARA IDENTIFICARLOS
-  isGlobal: { type: Boolean, default: false },
+  businessId: { type: mongoose.Schema.Types.ObjectId, ref: 'Business', required: true },
 
-  // Reglas
+  // TIPOS DE PRÉSTAMO OFICIALES
+  lendingType: {
+    type: String,
+    enum: ['redito', 'fixed', 'amortization'],
+    required: true
+  },
+
+  // Configuración Base
   interestRate: { type: Number, required: true },
-  duration: { type: Number, default: 12 }, 
-  frequency: { type: String, default: 'weekly' },
-  interestType: { type: String, enum: ['simple', 'reducing'], default: 'simple' },
-  
-  isActive: { type: Boolean, default: true },
-  createdAt: { type: Date, default: Date.now }
+  paymentFrequency: { type: String, default: 'weekly' },
+
+  // CONFIGURACIÓN DE MORA
+  penaltyType: {
+    type: String,
+    enum: ['percentage_quota', 'percentage_capital', 'fixed_amount'],
+    default: 'percentage_quota'
+  },
+  penaltyValue: { type: Number, default: 5 }, // % o Monto fijo
+  gracePeriod: { type: Number, default: 1 },
+
+  isActive: { type: Boolean, default: true }
 });
 
 module.exports = mongoose.model('Product', ProductSchema);

@@ -7,11 +7,11 @@ exports.getProducts = async (req, res) => {
     // A) Sean de mi empresa (businessId match)
     // B) O sean globales (isGlobal: true)
     const filter = {
-        $or: [
-            { businessId: req.user.businessId },
-            { isGlobal: true }
-        ],
-        isActive: true
+      $or: [
+        { businessId: req.user.businessId },
+        { isGlobal: true }
+      ],
+      isActive: true
     };
 
     const products = await Product.find(filter).sort({ isGlobal: -1, name: 1 }); // Globales primero
@@ -25,7 +25,7 @@ exports.getProducts = async (req, res) => {
 exports.createProduct = async (req, res) => {
   try {
     const { name, interestRate, duration, frequency, interestType } = req.body;
-    
+
     // Si el que crea es TI, es Global. Si es Admin, es Privado.
     const isGlobal = req.user.role === 'ti';
 
@@ -43,5 +43,14 @@ exports.createProduct = async (req, res) => {
     res.status(201).json(newProduct);
   } catch (error) {
     res.status(400).json({ error: error.message });
+  }
+};
+// 3. Eliminar Producto
+exports.deleteProduct = async (req, res) => {
+  try {
+    await Product.findByIdAndDelete(req.params.id);
+    res.json({ message: "Producto eliminado" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 };

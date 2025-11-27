@@ -8,67 +8,62 @@ exports.createTransaction = async (req, res) => {
   try {
     const { type, amount, clientId, walletId, category, description } = req.body;
 
-    // 1. Validaciones básicas
-    if (!amount || amount <= 0) {
+    // 1. Validar monto
+    if (!amount || Number(amount) <= 0) {
       return res.status(400).json({ error: "El monto debe ser mayor a 0" });
     }
 
-    // 2. Buscar la Cartera afectada
-    // Si el frontend envía walletId, usamos esa. Si no, buscamos la primera disponible (Default)
+    // 2. Buscar Cartera
     let wallet;
     if (walletId) {
       wallet = await Wallet.findById(walletId);
     } else {
-      wallet = await Wallet.findOne(); // Fallback: usar la primera que encuentre
+      // Fallback: buscar la primera de ESTA empresa
+      wallet = await Wallet.findOne({ businessId: req.user.businessId });
     }
 
-    if (!wallet) {
-      return res.status(404).json({ error: "No se encontró ninguna cartera para procesar el dinero." });
+    if (!wallet) return res.status(404).json({ error: "Cartera no encontrada" });
+
+    // --- 3. ACTUALIZACIÓN MATEMÁTICA SEGURA ---
+    const currentBalance = Number(wallet.balance) || 0; // Forzar número
+    const amountToProcess = Number(amount);
+
+    if (['in_payment', 'entry'].includes(type)) {
+      wallet.balance = currentBalance + amountToProcess;
+    } else {
+      wallet.balance = currentBalance - amountToProcess;
     }
 
-    // 3. Lógica Financiera según el tipo
-    if (type === 'in_payment') {
-      // COBRO: Entra dinero a caja, disminuye deuda cliente
-      wallet.balance += Number(amount);
-      
-      if (clientId) {
-        const client = await Client.findById(clientId);
-        if (client) {
-          client.balance -= Number(amount);
-          // Si el balance llega a 0 (o menos por error), marcar como pagado
-          if (client.balance <= 0) {
-            client.balance = 0;
-            client.status = 'paid';
-          }
-          await client.save();
-        }
-      }
-    } 
-    else if (type === 'out_loan') {
-      // DESEMBOLSO: Sale dinero de caja (hacia el cliente)
-      // Nota: La deuda del cliente usualmente se crea en loanController, aquí solo movemos la plata.
-      wallet.balance -= Number(amount);
-    }
-    else if (type === 'entry') {
-      // INGRESO CAPITAL: Entra dinero (Aporte de socio, etc)
-      wallet.balance += Number(amount);
-    }
-    else if (type === 'exit') {
-      // GASTO: Sale dinero (Gasolina, Comida, Retiro)
-      wallet.balance -= Number(amount);
-    }
+    // Evitar errores de decimales flotantes (ej: 10.0000001)
+    wallet.balance = Math.round(wallet.balance * 100) / 100;
 
-    // 4. Guardar cambios en la Cartera
     await wallet.save();
 
-    // 5. Registrar la Transacción en el Historial
+    // 4. Si es cobro, actualizar cliente
+    if (type === 'in_payment' && clientId) {
+      const client = await Client.findById(clientId);
+      if (client) {
+        // También aseguramos matemática aquí
+        const clientBalance = Number(client.balance) || 0;
+        client.balance = clientBalance - amountToProcess;
+
+        if (client.balance <= 0.5) { // Pequeña tolerancia
+          client.balance = 0;
+          client.status = 'paid';
+        }
+        await client.save();
+      }
+    }
+
+    // 5. CREAR TRANSACCIÓN
     const newTx = new Transaction({
       type,
-      amount: Number(amount),
-      category: category || getDefaultCategory(type),
-      description: description || getDefaultDescription(type),
+      amount: amountToProcess,
+      category: category || (type === 'entry' ? 'Ingreso Manual' : 'Gasto'),
+      description: description || '-',
       client: clientId || null,
-      wallet: wallet._id, // Guardamos referencia de qué cartera se usó
+      wallet: wallet._id,
+      businessId: req.user.businessId, // Obligatorio
       date: new Date()
     });
 
@@ -111,7 +106,7 @@ exports.getWallets = async (req, res) => {
   try {
     // Usamos el filtro automático del middleware o forzamos el ID
     const filter = req.businessFilter || { businessId: req.user.businessId };
-    
+
     const wallets = await Wallet.find(filter);
     res.json(wallets);
   } catch (error) {
@@ -123,7 +118,7 @@ exports.getWallets = async (req, res) => {
 exports.createWallet = async (req, res) => {
   try {
     const { name, initialBalance } = req.body;
-    
+
     if (!name) return res.status(400).json({ error: "El nombre es requerido" });
 
     // --- VALIDACIÓN SAAS: LÍMITE DE CARTERAS ---
@@ -135,13 +130,13 @@ exports.createWallet = async (req, res) => {
 
     const newWallet = new Wallet({
       name,
-      balance, 
+      balance,
       isDefault: false,
       businessId: req.user.businessId // <--- ¡ESTA LÍNEA FALTABA!
     });
 
     await newWallet.save();
-    
+
     // Crear registro histórico del ingreso inicial
     if (balance > 0) {
       const initialTx = new Transaction({
@@ -169,7 +164,7 @@ exports.getHistory = async (req, res) => {
     // 1. Validación de Seguridad
     if (!req.user || !req.user.businessId) {
       // Si no sabemos de qué empresa es, devolvemos array vacío en vez de explotar
-      return res.json([]); 
+      return res.json([]);
     }
 
     // 2. Filtro Automático
@@ -182,7 +177,7 @@ exports.getHistory = async (req, res) => {
       .populate('wallet', 'name') // Traer nombre de la cartera
       .sort({ date: -1 }) // Más reciente primero
       .limit(200); // Límite de seguridad
-      
+
     res.json(history);
 
   } catch (error) {
@@ -227,15 +222,76 @@ exports.getWalletDetails = async (req, res) => {
 exports.setWalletDefault = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Desmarcar todas
     await Wallet.updateMany({}, { isDefault: false });
-    
+
     // Marcar la seleccionada
     const wallet = await Wallet.findByIdAndUpdate(id, { isDefault: true }, { new: true });
-    
+
     res.json(wallet);
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// 6. Eliminar Transacción (Solo las que NO están atadas a clientes/préstamos)
+exports.deleteTransaction = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 1. Buscar la transacción
+    const transaction = await Transaction.findById(id);
+
+    if (!transaction) {
+      return res.status(404).json({ error: "Transacción no encontrada" });
+    }
+
+    // 2. Verificar que pertenece a la empresa del usuario (Seguridad SaaS)
+    if (transaction.businessId.toString() !== req.user.businessId.toString()) {
+      return res.status(403).json({ error: "No tienes permiso para eliminar esta transacción" });
+    }
+
+    // 3. VALIDACIÓN CRÍTICA: Solo se pueden eliminar transacciones SIN cliente
+    if (transaction.client) {
+      return res.status(400).json({
+        error: "No se puede eliminar esta transacción porque está asociada a un cliente. Solo se pueden eliminar movimientos internos (ingresos/gastos manuales)."
+      });
+    }
+
+    // 4. Revertir el balance de la cartera
+    const wallet = await Wallet.findById(transaction.wallet);
+
+    if (!wallet) {
+      return res.status(404).json({ error: "Cartera asociada no encontrada" });
+    }
+
+    const currentBalance = Number(wallet.balance) || 0;
+    const amountToReverse = Number(transaction.amount);
+
+    // Revertir según el tipo de transacción
+    if (['in_payment', 'entry'].includes(transaction.type)) {
+      // Si fue un ingreso, ahora lo restamos
+      wallet.balance = currentBalance - amountToReverse;
+    } else {
+      // Si fue un gasto, ahora lo sumamos de vuelta
+      wallet.balance = currentBalance + amountToReverse;
+    }
+
+    // Evitar errores de decimales flotantes
+    wallet.balance = Math.round(wallet.balance * 100) / 100;
+    await wallet.save();
+
+    // 5. Eliminar la transacción
+    await Transaction.findByIdAndDelete(id);
+
+    res.json({
+      message: "Transacción eliminada exitosamente",
+      newWalletBalance: wallet.balance
+    });
+
+  } catch (error) {
+    console.error("Error eliminando transacción:", error);
     res.status(500).json({ error: error.message });
   }
 };

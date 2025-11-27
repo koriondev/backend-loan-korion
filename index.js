@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const path = require('path');
 
 // --- 1. IMPORTAR RUTAS ---
 const productRoutes = require('./routes/products');
@@ -19,7 +20,9 @@ const app = express();
 // Middlewares
 const allowedOrigins = [
   'http://localhost:5173', // Tu entorno local
-  'https://inversionesgenao.korion.do' // <--- TU URL DE NETLIFY (Copiada de tu imagen)
+  'https://inversionesgenao.korion.do',
+  'http://18.222.232.146:5173',
+
 ];
 
 app.use(cors({
@@ -35,12 +38,22 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+// Serve static files from uploads directory
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // Conexión Base de Datos
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/korionloan';
 
 mongoose.connect(MONGO_URI)
   .then(() => console.log('🟢 MongoDB Conectado'))
   .catch(err => console.error('🔴 Error Mongo:', err));
+console.log('---------------------------------------');
+console.log('🟢 MongoDB Conectado Exitosamente');
+console.log(`🏠 HOST: ${mongoose.connection.host}`); // <--- ESTO TE DIRÁ LA VERDAD
+console.log(`🗄️  BASE: ${mongoose.connection.name}`);
+console.log('---------------------------------------');
+
 
 // --- 2. CONECTAR RUTAS (ENDPOINTS) ---
 app.use('/api/auth', authRoutes);

@@ -1,0 +1,8 @@
+[dotenv@17.2.3] injecting env (2) from .env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+---------------------------------------
+🟢 MongoDB Conectado Exitosamente
+🏠 HOST: undefined
+🗄️  BASE: undefined
+---------------------------------------
+🚀 Server en puerto 5000
+🟢 MongoDB Conectado
