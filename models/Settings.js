@@ -18,6 +18,10 @@ const SettingsSchema = new mongoose.Schema({
   lateFeeValue: { type: Number, default: 5 }, // Ej: 5%
   gracePeriod: { type: Number, default: 3 }, // Días de gracia antes de cobrar mora
 
+  // Configuración de Días Laborables
+  workingDays: { type: [Number], default: [1, 2, 3, 4, 5, 6] }, // 0=Dom, 1=Lun ... 6=Sab
+  nonWorkingDates: { type: [Date], default: [] }, // Feriados específicos
+
   // Recibos
   receiptFooter: { type: String, default: 'Gracias por su pago.' },
 

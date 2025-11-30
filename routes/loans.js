@@ -18,6 +18,9 @@ router.post('/preview', authMiddleware, loanController.previewLoan);
 // 3. Listar Préstamos (Protegido)
 router.get('/', authMiddleware, loanController.getLoans);
 
+// 3.1 Obtener un Préstamo (Protegido)
+router.get('/:id', authMiddleware, loanController.getLoan);
+
 // 4. Registrar Pago (Protegido)
 router.post('/pay', authMiddleware, loanController.registerPayment);
 

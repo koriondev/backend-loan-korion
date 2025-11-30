@@ -7,11 +7,35 @@ const Settings = require('../models/Settings');
 const Product = require('../models/Product');
 
 // Función auxiliar fechas
-const getNextDate = (startDate, index, freq) => {
+const getNextDate = (startDate, index, freq, settings) => {
   const date = new Date(startDate);
   const daysMap = { 'daily': 1, 'weekly': 7, 'biweekly': 15, 'monthly': 30 };
   const daysToAdd = daysMap[freq] || 7;
+
+  // Calcular fecha base
   date.setDate(date.getDate() + (index * daysToAdd));
+
+  // Ajustar si es día no laborable (si hay settings)
+  if (settings && settings.workingDays && settings.workingDays.length > 0) {
+    const isWorkingDay = (d) => {
+      const dayOfWeek = d.getDay(); // 0-6
+      const isDayOff = !settings.workingDays.includes(dayOfWeek);
+
+      // Verificar feriados específicos
+      const isHoliday = settings.nonWorkingDates && settings.nonWorkingDates.some(holiday => {
+        const h = new Date(holiday);
+        return h.getDate() === d.getDate() && h.getMonth() === d.getMonth() && h.getFullYear() === d.getFullYear();
+      });
+
+      return !isDayOff && !isHoliday;
+    };
+
+    // Si cae en día no laborable, mover al siguiente día hasta encontrar uno laborable
+    while (!isWorkingDay(date)) {
+      date.setDate(date.getDate() + 1);
+    }
+  }
+
   return date;
 };
 
@@ -29,12 +53,13 @@ const getPeriodicRate = (monthlyRatePercent, frequency) => {
 };
 
 // Función auxiliar: Calcular Esquema de Pagos
-const calculateSchedule = (amount, rate, term, frequency, type) => {
+const calculateSchedule = (amount, rate, term, frequency, type, settings, startDate = new Date()) => {
   const finalRate = Number(rate) || 0;
   const finalFreq = frequency || 'weekly';
   const finalType = type || 'simple';
   const finalTerm = Number(term) || 12;
   const finalAmount = Number(amount);
+  const start = new Date(startDate);
 
   const periodicRate = getPeriodicRate(finalRate, finalFreq);
   const roundToNearestFive = (num) => Math.round(num / 5) * 5;
@@ -47,7 +72,7 @@ const calculateSchedule = (amount, rate, term, frequency, type) => {
     for (let i = 1; i <= finalTerm; i++) {
       schedule.push({
         number: i,
-        dueDate: getNextDate(new Date(), i, finalFreq),
+        dueDate: getNextDate(start, i, finalFreq, settings),
         amount: interestAmount,
         capital: 0,
         interest: interestAmount,
@@ -73,7 +98,7 @@ const calculateSchedule = (amount, rate, term, frequency, type) => {
 
       schedule.push({
         number: i,
-        dueDate: getNextDate(new Date(), i, finalFreq),
+        dueDate: getNextDate(start, i, finalFreq, settings),
         amount: paymentAmount,
         capital: capitalPart,
         interest: interestPart,
@@ -101,7 +126,7 @@ const calculateSchedule = (amount, rate, term, frequency, type) => {
       currentTotalDebt -= paymentAmount;
       schedule.push({
         number: i,
-        dueDate: getNextDate(new Date(), i, finalFreq),
+        dueDate: getNextDate(start, i, finalFreq, settings),
         amount: paymentAmount,
         capital: capitalPart,
         interest: interestPart,
@@ -115,33 +140,69 @@ const calculateSchedule = (amount, rate, term, frequency, type) => {
   return { schedule, totalToPay, finalRate, finalFreq, finalType, finalTerm, finalAmount };
 };
 
-// HELPER: Calcular Mora
-const calculateLateFee = (loan, overdueInstallments) => {
-  if (!loan.penaltyConfig || overdueInstallments <= 0) return 0;
+// HELPER: Calcular Mora Acumulativa
+const calculateLateFee = (loan, overdueInstallmentsCount) => {
+  if (!loan.penaltyConfig || overdueInstallmentsCount <= 0) return 0;
 
   const { type, value, gracePeriod } = loan.penaltyConfig;
+  const today = new Date();
 
-  // Si hay días de gracia, verificar si realmente aplica (esto requeriría lógica más compleja por cuota)
-  // Por simplicidad en esta versión, si tiene cuotas vencidas marcadas por el sistema, aplicamos mora.
+  // Obtener cuotas vencidas reales
+  const overdueQuotas = loan.schedule.filter(q => q.status === 'pending' && new Date(q.dueDate) < today);
 
+  if (overdueQuotas.length === 0) return 0;
+
+  let totalMora = 0;
+  let accumulatedDebt = 0; // Para el cálculo compuesto si fuera necesario
+
+  // El usuario pidió: "mora se saca en base a la mora anterior mas el balance anterior mas la mora nueva"
+  // Interpretación: Mora Acumulada.
+  // Iteramos por cada cuota vencida en orden cronológico
+
+  overdueQuotas.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+
+  // Si es monto fijo, es simple: valor * cantidad
   if (type === 'fixed') {
-    return value * overdueInstallments; // Ej: 100 pesos por cada cuota vencida
-  } else {
-    // Porcentaje sobre la cuota vencida (Capital + Interés)
-    // Asumimos que 'value' es un porcentaje (ej. 5 para 5%)
-    // Necesitamos saber el monto de la cuota. En Rédito es el interés. En otros es la cuota fija.
-
-    // Estimación rápida basada en la primera cuota del schedule (asumiendo cuotas iguales)
-    const quotaAmount = loan.schedule[0]?.amount || 0;
-    return (quotaAmount * (value / 100)) * overdueInstallments;
+    return value * overdueQuotas.length;
   }
+
+  // Si es porcentaje, aplicamos la lógica acumulativa solicitada
+  // "si no paga en la siguiente fecha de pago la mora se saca en base a la mora anterior mas el balance anterior"
+
+  let currentAccumulatedMora = 0;
+
+  overdueQuotas.forEach((quota, index) => {
+    // Base para el cálculo de ESTA mora:
+    // Opción A (Simple): % sobre la cuota vencida
+    // Opción B (Compuesta): % sobre (Cuota Vencida + Moras Acumuladas Previas)
+
+    // Según requerimiento: "mora anterior mas el balance anterior"
+    // Balance anterior = Monto de la cuota (Capital + Interés)
+
+    const baseAmount = quota.amount + currentAccumulatedMora;
+    const moraForThisQuota = baseAmount * (value / 100);
+
+    currentAccumulatedMora += moraForThisQuota;
+  });
+
+  return currentAccumulatedMora;
 };
 
 // 0. PREVISUALIZAR PRÉSTAMO
 exports.previewLoan = async (req, res) => {
   try {
-    const { amount, interestRate, duration, frequency, type, lendingType } = req.body;
-    const result = calculateSchedule(amount, interestRate, duration, frequency, lendingType || type);
+    const { amount, interestRate, duration, frequency, type, lendingType, startDate } = req.body;
+    console.log('=== PREVIEW LOAN DEBUG ===');
+    console.log('StartDate received:', startDate);
+
+    // Obtener settings para días laborables
+    // Nota: req.user puede no estar disponible si es público, pero asumimos authMiddleware
+    let settings = null;
+    if (req.user && req.user.businessId) {
+      settings = await Settings.findOne({ businessId: req.user.businessId });
+    }
+
+    const result = calculateSchedule(amount, interestRate, duration, frequency, lendingType || type, settings, startDate);
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -155,6 +216,9 @@ exports.createLoan = async (req, res) => {
 
   try {
     const { clientId, productId, amount, interestRate, duration, frequency, type, lendingType } = req.body;
+
+    console.log('=== CREATE LOAN DEBUG ===');
+    console.log('Body:', JSON.stringify(req.body, null, 2));
 
     // A. Definir Reglas
     let calcParams = { amount, rate: interestRate, term: duration, freq: frequency, type: lendingType || type };
@@ -172,9 +236,11 @@ exports.createLoan = async (req, res) => {
       }
     }
 
+    // Obtener Settings (Globales)
+    const settings = await Settings.findOne({ businessId: req.user.businessId }).session(session);
+
     // Si no hay config, usar defaults globales (Settings)
     if (!finalPenaltyConfig) {
-      const settings = await Settings.findOne({ businessId: req.user.businessId }).session(session);
       if (settings) {
         finalPenaltyConfig = {
           type: settings.lateFeeType,
@@ -185,8 +251,12 @@ exports.createLoan = async (req, res) => {
     }
 
     // B. MOTOR MATEMÁTICO
+    // MIGRACIÓN: Obtener fecha inicio
+    const { startDate: customStartDate } = req.body;
+    const loanStartDate = customStartDate ? new Date(customStartDate) : new Date();
+
     const { schedule, totalToPay, finalRate, finalFreq, finalType, finalTerm, finalAmount } = calculateSchedule(
-      calcParams.amount, calcParams.rate, calcParams.term, calcParams.freq, calcParams.type
+      calcParams.amount, calcParams.rate, calcParams.term, calcParams.freq, calcParams.type, settings, loanStartDate
     );
 
     // Validar Caja
@@ -220,8 +290,8 @@ exports.createLoan = async (req, res) => {
     }
 
     // MIGRACIÓN: Marcar cuotas como pagadas si se especificó
-    const { startDate: customStartDate, paidInstallments } = req.body;
-    const loanStartDate = customStartDate ? new Date(customStartDate) : new Date();
+    const { paidInstallments } = req.body;
+    // loanStartDate ya fue calculado arriba
 
     if (paidInstallments && paidInstallments > 0) {
       let totalPaidAmount = 0;
@@ -266,6 +336,16 @@ exports.createLoan = async (req, res) => {
 
     // Usar fecha personalizada si se especificó
     newLoan.createdAt = loanStartDate;
+
+    // FIX: Verificar si ya nace vencido (para préstamos migrados/históricos)
+    if (newLoan.status !== 'paid') {
+      const today = new Date();
+      const hasOverdue = newLoan.schedule.some(q => q.status === 'pending' && new Date(q.dueDate) < today);
+      if (hasOverdue) {
+        newLoan.status = 'past_due';
+      }
+    }
+
     await newLoan.save({ session });
 
     wallet.balance -= finalAmount;
@@ -300,7 +380,42 @@ exports.getLoans = async (req, res) => {
   try {
     const filter = req.businessFilter || { businessId: req.user.businessId };
     const loans = await Loan.find(filter).populate('client', 'name').sort({ createdAt: -1 });
-    res.json(loans);
+
+    // FIX: Actualizar estados de atraso automáticamente Y verificar si está pagado
+    const today = new Date();
+    const updatedLoans = await Promise.all(loans.map(async (loan) => {
+      let newStatus = loan.status;
+
+      // 1. Check if Paid (Self-healing)
+      if (loan.balance <= 0.1 && loan.status !== 'paid') {
+        newStatus = 'paid';
+      }
+      // 2. Check Overdue (Only if not paid)
+      else if (newStatus !== 'paid' && newStatus !== 'bad_debt') {
+        const hasOverdue = loan.schedule.some(q => q.status === 'pending' && new Date(q.dueDate) < today);
+        if (hasOverdue && newStatus !== 'past_due') {
+          newStatus = 'past_due';
+        } else if (!hasOverdue && newStatus === 'past_due') {
+          newStatus = 'active';
+        }
+      }
+
+      if (newStatus !== loan.status) {
+        loan.status = newStatus;
+        await loan.save();
+      }
+
+      // CALCULAR MORA ACTUAL PARA ENVIAR AL FRONTEND
+      const overdueCount = loan.schedule.filter(q => q.status === 'pending' && new Date(q.dueDate) < today).length;
+      const lateFee = calculateLateFee(loan, overdueCount);
+
+      return {
+        ...loan.toObject(),
+        lateFee: lateFee || 0
+      };
+    }));
+
+    res.json(updatedLoans);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -329,16 +444,38 @@ exports.registerPayment = async (req, res) => {
     if (!wallet) throw new Error("Caja no encontrada");
 
     // Validaciones básicas
+    // Validaciones básicas
     if (amount <= 0) throw new Error("Monto inválido");
-    if (amount > loan.balance + 1000) throw new Error("Monto excede deuda total (con margen)");
+
+    // Recalcular mora actual para validación
+    const today = new Date();
+    const overdueInstallments = loan.schedule.filter(q => q.status === 'pending' && new Date(q.dueDate) <= today).length;
+    const totalLateFee = calculateLateFee(loan, overdueInstallments);
+
+    // Calcular deuda total real para validación
+    let totalRealDebt = loan.balance + totalLateFee;
+
+    // Para Rédito, el balance es solo capital, hay que sumar intereses vencidos Y el actual si se va a saldar
+    if (loan.lendingType === 'redito') {
+      const pendingInterest = loan.schedule
+        .filter(q => q.status === 'pending' && new Date(q.dueDate) <= today)
+        .reduce((acc, q) => acc + (q.interest || 0) - (q.paidInterest || 0), 0);
+
+      totalRealDebt += pendingInterest;
+
+      // Sumar también el interés de la próxima cuota (actual) si existe, ya que el usuario podría querer saldar
+      const nextQuota = loan.schedule.find(q => q.status === 'pending' && new Date(q.dueDate) > today);
+      if (nextQuota) {
+        totalRealDebt += (nextQuota.interest || 0) - (nextQuota.paidInterest || 0);
+      }
+    }
+
+    if (amount > totalRealDebt + 100000) throw new Error("Monto excede deuda total por mucho (verifique monto)");
 
     // 3. Lógica de Distribución del Pago
     // Orden de prelación: Mora -> Interés -> Capital
 
-    // Recalcular mora actual para cobrarla
-    const today = new Date();
-    const overdueInstallments = loan.schedule.filter(q => q.status === 'pending' && new Date(q.dueDate) <= today).length;
-    const totalLateFee = calculateLateFee(loan, overdueInstallments);
+    // (Mora ya calculada arriba)
 
     let remainingPayment = amount;
     let appliedToMora = 0;
@@ -354,12 +491,26 @@ exports.registerPayment = async (req, res) => {
 
     // B. Cobrar Intereses y Capital (Iterando cuotas)
     let currentPayment = remainingPayment;
+    let paidFutureQuota = false; // Flag para controlar pago de cuotas futuras en Rédito
 
     for (let i = 0; i < loan.schedule.length; i++) {
       if (currentPayment <= 0) break;
       let q = loan.schedule[i];
 
       if (q.status === 'pending') {
+        // FIX: En Rédito, si la cuota es futura y ya pagamos la actual (o no hay vencidas), NO seguir pagando intereses futuros.
+        // Priorizar Capital.
+        if (loan.lendingType === 'redito') {
+          const isFuture = new Date(q.dueDate) > new Date();
+          if (isFuture) {
+            if (paidFutureQuota) {
+              // Ya pagamos una cuota futura (la actual), el resto va a capital.
+              break;
+            }
+            paidFutureQuota = true; // Marcamos que estamos pagando la cuota actual/futura inmediata
+          }
+        }
+
         // 1. Interés
         const interestPending = (q.interest || 0) - (q.paidInterest || 0);
         if (interestPending > 0) {
@@ -370,7 +521,15 @@ exports.registerPayment = async (req, res) => {
         }
 
         // 2. Capital
-        const capitalPending = (q.capital || 0) - (q.paidCapital || 0);
+        let capitalPending = (q.capital || 0) - (q.paidCapital || 0);
+
+        // FIX: En Rédito, las cuotas tienen capital 0, pero si sobra dinero se debe abonar al capital principal
+        if (loan.lendingType === 'redito' && currentPayment > 0 && interestPending <= 0) {
+          // En rédito, el capital está en el préstamo global, no en cuotas específicas (salvo la última teóricamente, pero aquí lo manejamos flexible)
+          // Permitimos abonar todo lo que sobre a capital
+          capitalPending = currentPayment;
+        }
+
         if (capitalPending > 0 && currentPayment > 0) {
           const payCap = Math.min(currentPayment, capitalPending);
           q.paidCapital = (q.paidCapital || 0) + payCap;
@@ -381,25 +540,89 @@ exports.registerPayment = async (req, res) => {
         // Actualizar estado de cuota
         q.paidAmount = (q.paidInterest || 0) + (q.paidCapital || 0);
 
-        if (q.paidInterest >= (q.interest - 0.1) && q.paidCapital >= (q.capital - 0.1)) {
-          q.status = 'paid';
-          q.paidDate = new Date();
+        // En Rédito, una cuota se paga si se cubre el interés. El capital es aparte.
+        if (loan.lendingType === 'redito') {
+          if (q.paidInterest >= (q.interest - 0.1)) {
+            q.status = 'paid';
+            q.paidDate = new Date();
+          }
+        } else {
+          if (q.paidInterest >= (q.interest - 0.1) && q.paidCapital >= (q.capital - 0.1)) {
+            q.status = 'paid';
+            q.paidDate = new Date();
+          }
         }
       }
     }
 
+    // Si es Rédito y sobró dinero (porque se acabaron las cuotas vencidas/pendientes), aplicar al capital general
+    if (loan.lendingType === 'redito' && currentPayment > 0) {
+      appliedToCapital += currentPayment;
+      // No lo asignamos a una cuota específica del schedule visual, o podríamos asignarlo a la última.
+      // Por ahora solo reducimos el balance.
+      currentPayment = 0;
+    }
+
     // C. Actualizar Totales del Préstamo
-    loan.balance -= appliedToCapital;
+    // FIX: Para préstamos que no son rédito (Fixed/Amortization), el balance incluye intereses, así que debemos restar también lo pagado de interés.
+    if (loan.lendingType === 'redito') {
+      loan.balance -= appliedToCapital;
+    } else {
+      loan.balance -= (appliedToCapital + appliedToInterest);
+    }
+
+    // Si el balance es <= 0, marcar como pagado
+    if (loan.balance <= 0.1) { // Margen por decimales
+      loan.status = 'paid';
+      loan.balance = 0; // Evitar negativos feos si es muy pequeño
+      // Opcional: Marcar cuotas pendientes como canceladas o pagadas?
+      // Por ahora lo dejamos así, el status del préstamo manda.
+    }
 
     // Guardar
     loan.markModified('schedule');
     await loan.save({ session });
 
     // Actualizar Cliente y Caja
-    client.balance = loan.balance;
-    wallet.balance += amount;
+    client.balance = loan.balance; // Esto podría estar mal si el cliente tiene OTROS préstamos. 
+    // FIX: El balance del cliente debe ser la suma de sus préstamos o ajustarse por delta.
+    // El código original hacía: client.balance = loan.balance; 
+    // Esto asume que el cliente SOLO tiene este préstamo o que client.balance trackea SOLO este préstamo?
+    // Revisando createLoan: $inc: { balance: totalToPay }.
+    // Entonces client.balance es la deuda TOTAL del cliente.
+    // Aquí estamos SOBREESCRIBIENDO el balance del cliente con el balance de ESTE préstamo.
+    // ESTO ES UN BUG POTENCIAL si el cliente tiene múltiples préstamos.
+    // Deberíamos hacer $inc: { balance: -amount } (o lo que se pagó de capital/interés?)
+    // Pero el código original hacía `client.balance = loan.balance`.
+    // Vamos a corregirlo para que sea seguro: restar lo pagado al balance del cliente.
 
-    await client.save({ session });
+    // Recuperamos el cliente de nuevo para asegurar
+    // client.balance -= amount; // No, porque amount incluye mora.
+    // El balance del cliente suele ser Capital + Interés pendiente.
+    // Si pagamos mora, no baja el balance del cliente (usualmente).
+    // Si pagamos interés, baja? Depende de cómo se sumó.
+    // En createLoan, se sumó `totalToPay`.
+    // Si es redito, `totalToPay` era `interestAmount * finalTerm + finalAmount`.
+    // Entonces pagar interés BAJA el balance.
+
+    // Vamos a mantener la lógica original de restar lo aplicado a capital e interés?
+    // El código original hacía `client.balance = loan.balance`. Esto estaba MAL si hay múltiples préstamos.
+    // Vamos a cambiarlo a decremento.
+
+    const amountToReduceClientBalance = appliedToCapital + appliedToInterest; // Asumiendo que el balance incluye intereses.
+    // Si es Rédito, createLoan sumaba `(interestAmount * finalTerm) + finalAmount`.
+    // Entonces sí, pagar interés reduce deuda.
+
+    // Pero espera, en Rédito, `loan.balance` se inicializaba como `finalAmount` (solo capital).
+    // Entonces `client.balance` se incrementaba por `totalToPay` (Cap + Int).
+    // Si `loan.balance` solo trackea capital, entonces `client.balance = loan.balance` es INCORRECTO porque borra los intereses del cliente.
+
+    // FIX: Usar $inc en el cliente.
+    await Client.findByIdAndUpdate(clientId, {
+      $inc: { balance: -(appliedToCapital + appliedToInterest) }
+    }).session(session);
+
+    wallet.balance += amount;
     await wallet.save({ session });
 
     // D. Registrar Transacción
@@ -440,14 +663,54 @@ exports.registerPayment = async (req, res) => {
 exports.getArrears = async (req, res) => {
   try {
     const filter = req.businessFilter || { businessId: req.user.businessId };
-    const loans = await Loan.find({ status: 'active', ...filter }).populate('client');
+    // Include past_due in the search
+    const loans = await Loan.find({
+      status: { $in: ['active', 'past_due'] },
+      ...filter
+    }).populate('client');
 
     const today = new Date();
-    const arrears = loans.filter(l =>
-      l.schedule.some(q => new Date(q.dueDate) < today && q.status === 'pending')
-    ).map(loan => {
-      return { ...loan.toObject(), totalOverdue: 500 };
-    });
+
+    // Update statuses if needed
+    const updatedLoans = await Promise.all(loans.map(async (loan) => {
+      const hasOverdue = loan.schedule.some(q => q.status === 'pending' && new Date(q.dueDate) < today);
+      let newStatus = loan.status;
+
+      if (hasOverdue && loan.status !== 'past_due') {
+        newStatus = 'past_due';
+      } else if (!hasOverdue && loan.status === 'past_due') {
+        newStatus = 'active';
+      }
+
+      if (newStatus !== loan.status) {
+        loan.status = newStatus;
+        await loan.save();
+      }
+      return loan;
+    }));
+
+    // Filter for response
+    const arrears = updatedLoans
+      .filter(l => l.status === 'past_due')
+      .map(loan => {
+        const overdueQuotas = loan.schedule.filter(q => q.status === 'pending' && new Date(q.dueDate) < today);
+        const overdueCount = overdueQuotas.length;
+        const lateFee = calculateLateFee(loan, overdueCount);
+
+        const overdueInterest = overdueQuotas.reduce((acc, q) => acc + (q.interest || 0), 0);
+        const overdueCapital = overdueQuotas.reduce((acc, q) => acc + (q.capital || 0), 0);
+
+        const totalOverdue = lateFee + overdueInterest + overdueCapital;
+
+        return {
+          ...loan.toObject(),
+          lateFee,
+          totalOverdue,
+          installmentsCount: overdueCount,
+          daysLate: overdueQuotas.length > 0 ? Math.floor((today - new Date(overdueQuotas[0].dueDate)) / (1000 * 60 * 60 * 24)) : 0,
+          overdueInstallments: overdueQuotas
+        };
+      });
 
     res.json(arrears);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -456,8 +719,32 @@ exports.getArrears = async (req, res) => {
 // 5. DETALLE PAGO
 exports.getPaymentDetails = async (req, res) => {
   try {
-    const loan = await Loan.findById(req.params.id);
-    if (!loan) return res.status(404).json({ error: "No existe" });
+    const loan = await Loan.findById(req.params.id).populate('client');
+    if (!loan) return res.status(404).json({ error: "No encontrado" });
+
+    // FIX: Actualizar estado si está vencido o pagado al consultar detalle
+    let newStatus = loan.status;
+
+    // 1. Check if Paid (Self-healing)
+    if (loan.balance <= 0.1 && loan.status !== 'paid') {
+      newStatus = 'paid';
+    }
+    // 2. Check Overdue
+    else if (newStatus !== 'paid' && newStatus !== 'bad_debt') {
+      const today = new Date();
+      const hasOverdue = loan.schedule.some(q => q.status === 'pending' && new Date(q.dueDate) < today);
+
+      if (hasOverdue && newStatus !== 'past_due') {
+        newStatus = 'past_due';
+      } else if (!hasOverdue && newStatus === 'past_due') {
+        newStatus = 'active';
+      }
+    }
+
+    if (newStatus !== loan.status) {
+      loan.status = newStatus;
+      await loan.save();
+    }
 
     // 2. Calcular Deuda Vencida (Interés + Capital Vencido)
     const today = new Date();
@@ -475,6 +762,15 @@ exports.getPaymentDetails = async (req, res) => {
 
     // 3. Calcular Mora
     const lateFee = calculateLateFee(loan, overdueCount);
+
+    // FIX: Para Rédito, incluir la próxima cuota pendiente aunque no esté vencida, para permitir pago anticipado de interés/cancelación
+    if (loan.lendingType === 'redito') {
+      const nextQuota = loan.schedule.find(q => q.status === 'pending' && new Date(q.dueDate) > today);
+      if (nextQuota) {
+        pendingInterest += (nextQuota.interest || 0);
+        // No incrementamos overdueCount para no cobrar mora injusta
+      }
+    }
 
     // 4. Estructurar Respuesta
     let suggestedAmount = 0;
@@ -583,8 +879,9 @@ exports.updateLoan = async (req, res) => {
     await Client.findByIdAndUpdate(loan.client, { $inc: { balance: -loan.balance } }).session(session); // Quitamos deuda anterior
 
     // 2. Calcular NUEVO esquema
+    const settings = await Settings.findOne({ businessId: req.user.businessId }).session(session);
     const { schedule, totalToPay, finalRate, finalFreq, finalType, finalTerm, finalAmount } = calculateSchedule(
-      amount, interestRate, duration, frequency, lendingType
+      amount, interestRate, duration, frequency, lendingType, settings, loan.createdAt
     );
 
     // 3. Aplicar NUEVO impacto financiero
@@ -623,5 +920,28 @@ exports.updateLoan = async (req, res) => {
     res.status(500).json({ error: error.message });
   } finally {
     session.endSession();
+  }
+};
+
+// 2.1 OBTENER UN PRÉSTAMO
+exports.getLoan = async (req, res) => {
+  try {
+    const loan = await Loan.findById(req.params.id).populate('client');
+    if (!loan) return res.status(404).json({ error: "Préstamo no encontrado" });
+
+    // Seguridad: Verificar businessId
+    // Seguridad: Verificar businessId
+    if (loan.businessId.toString() !== req.user.businessId.toString()) {
+      return res.status(403).json({ error: "Acceso denegado" });
+    }
+
+    // Calcular Mora
+    const today = new Date();
+    const overdueCount = loan.schedule.filter(q => q.status === 'pending' && new Date(q.dueDate) < today).length;
+    const lateFee = calculateLateFee(loan, overdueCount);
+
+    res.json({ ...loan.toObject(), lateFee: lateFee || 0 });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 };

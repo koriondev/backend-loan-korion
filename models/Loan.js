@@ -28,7 +28,7 @@ const LoanSchema = new mongoose.Schema({
     gracePeriod: { type: Number }
   },
 
-  status: { type: String, enum: ['active', 'paid', 'bad_debt'], default: 'active' },
+  status: { type: String, enum: ['active', 'paid', 'bad_debt', 'past_due'], default: 'active' },
 
   schedule: [{
     number: Number,
