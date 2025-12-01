@@ -22,6 +22,7 @@ const allowedOrigins = [
   'http://localhost:5173', // Tu entorno local
   'https://inversionesgenao.korion.do',
   'http://18.222.232.146:5173',
+  'http://18.216.112.105:5173',
   'https://prestamos.korion.do',
 
 ];

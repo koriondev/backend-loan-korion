@@ -1,4 +1,5 @@
-[dotenv@17.2.3] injecting env (2) from .env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+nohup: ignoring input
+[dotenv@17.2.3] injecting env (2) from .env -- tip: 📡 add observability to secrets: https://dotenvx.com/ops
 ---------------------------------------
 🟢 MongoDB Conectado Exitosamente
 🏠 HOST: undefined

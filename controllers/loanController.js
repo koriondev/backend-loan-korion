@@ -647,7 +647,7 @@ exports.registerPayment = async (req, res) => {
     await transaction.save({ session });
 
     await session.commitTransaction();
-    res.json({ message: "Pago registrado", breakdown: { appliedToCapital, appliedToInterest, appliedToMora } });
+    res.json({ message: "Pago registrado", breakdown: { appliedToCapital, appliedToInterest, appliedToMora }, transaction });
 
   } catch (error) {
     await session.abortTransaction();
