@@ -15,6 +15,7 @@ const TransactionSchema = new mongoose.Schema({
 
   // RELACIONES
   client: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' }, // Opcional (si es cobro)
+  loan: { type: mongoose.Schema.Types.ObjectId, ref: 'Loan' }, // <--- Added this
   wallet: { type: mongoose.Schema.Types.ObjectId, ref: 'Wallet', required: true }, // <--- ¡ESTO FALTABA!
 
   date: { type: Date, default: Date.now }

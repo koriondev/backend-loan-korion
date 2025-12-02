@@ -26,6 +26,7 @@ exports.getGeneralStats = async (req, res) => {
         $group: {
           _id: null,
           totalBalance: { $sum: "$balance" },
+          totalCurrentCapital: { $sum: "$currentCapital" },
           // Ganancia = Total a Pagar - Monto Prestado
           totalInterest: { $sum: { $subtract: ["$totalToPay", "$amount"] } }
         }
@@ -96,12 +97,14 @@ exports.getGeneralStats = async (req, res) => {
     });
 
     // Preparar respuesta
-    const pStats = portfolioStats[0] || { totalBalance: 0, totalInterest: 0 };
+    const pStats = portfolioStats[0] || { totalBalance: 0, totalInterest: 0, totalCurrentCapital: 0 };
     const collectedMonth = monthlyStats.find(s => s._id === 'in_payment')?.total || 0;
     const lentMonth = monthlyStats.find(s => s._id === 'out_loan')?.total || 0;
 
     res.json({
       activePortfolio: pStats.totalBalance,
+      activeCapital: pStats.totalCurrentCapital,
+      activeInterest: pStats.totalBalance - pStats.totalCurrentCapital,
       projectedProfit: pStats.totalInterest,
       collectedMonth,
       lentMonth,

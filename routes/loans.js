@@ -33,4 +33,16 @@ router.delete('/:id', authMiddleware, loanController.deleteLoan);
 // 7. Editar Préstamo
 router.put('/:id', authMiddleware, loanController.updateLoan);
 
+// 8. Eliminar Pago/Transacción
+router.delete('/payment/:transactionId', authMiddleware, loanController.deletePayment);
+
+// 9. Actualizar Monto de Pago
+router.put('/payment/:transactionId', authMiddleware, loanController.updatePaymentAmount);
+
+// 10. Actualizar Configuración de Mora
+router.put('/:loanId/penalty-config', authMiddleware, loanController.updatePenaltyConfig);
+
+// 11. Recalcular Atrasos
+router.post('/recalculate-overdue', authMiddleware, loanController.recalculateOverdue);
+
 module.exports = router;

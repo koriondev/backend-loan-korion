@@ -38,6 +38,8 @@ const LoanSchema = new mongoose.Schema({
     interest: Number,
     status: { type: String, default: 'pending' },
     paidAmount: { type: Number, default: 0 },
+    paidInterest: { type: Number, default: 0 },
+    paidCapital: { type: Number, default: 0 },
     paidDate: Date
   }],
 

@@ -11,6 +11,7 @@ const clientRoutes = require('./routes/clients');
 const loanRoutes = require('./routes/loans');
 const financeRoutes = require('./routes/finance');
 const reportRoutes = require('./routes/reports');
+const notificationRoutes = require('./routes/notifications'); // Added notification routes import
 const settingsRoutes = require('./routes/settings');
 const userRoutes = require('./routes/users');
 const platformRoutes = require('./routes/platform'); // <--- ESTA FALTABA O ESTABA MAL
@@ -63,6 +64,7 @@ app.use('/api/clients', clientRoutes);
 app.use('/api/loans', loanRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/notifications', notificationRoutes);
 app.use('/api/config', settingsRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/platform', platformRoutes); // <--- CONEXIÓN SAAS
