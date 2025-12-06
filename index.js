@@ -15,6 +15,7 @@ const notificationRoutes = require('./routes/notifications'); // Added notificat
 const settingsRoutes = require('./routes/settings');
 const userRoutes = require('./routes/users');
 const platformRoutes = require('./routes/platform'); // <--- ESTA FALTABA O ESTABA MAL
+const loansV2Routes = require('./routes/loansV2'); // Import LoanV2 routes
 
 const app = express();
 
@@ -69,6 +70,7 @@ app.use('/api/config', settingsRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/platform', platformRoutes); // <--- CONEXIÓN SAAS
 app.use('/api/products', productRoutes); // <--- CONEXIÓN SAAS
+app.use('/api/v2/loans', loansV2Routes); // V2 Loan System
 
 // Ruta base de prueba
 app.get('/', (req, res) => {
@@ -76,5 +78,9 @@ app.get('/', (req, res) => {
 });
 
 // Iniciar Servidor
+// Scheduler
+const initScheduler = require('./services/schedulerService');
+initScheduler();
+
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Servidor corriendo en puerto ${PORT}`));

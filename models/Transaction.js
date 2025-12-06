@@ -10,6 +10,7 @@ const TransactionSchema = new mongoose.Schema({
   category: String, // Ej: "Pago Combustible"
   amount: { type: Number, required: true },
   description: String,
+  receiptId: String, // <--- Added receiptId
 
   metadata: { type: mongoose.Schema.Types.Mixed }, // Para guardar loanId, breakdown, etc.
 

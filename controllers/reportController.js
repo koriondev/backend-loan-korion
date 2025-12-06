@@ -87,14 +87,29 @@ exports.getGeneralStats = async (req, res) => {
     const defaultWallet = wallets.find(w => w.isDefault) || wallets[0];
     const totalCapital = defaultWallet ? defaultWallet.balance : 0;
 
-    // Mora simple
+    // Mora simple y Ganancia Mensual
+    console.log(`[DEBUG] Calculating stats for Business: ${businessIdStr}`);
     const activeLoansList = await Loan.find({ status: 'active', businessId: businessIdStr });
+    console.log(`[DEBUG] Found ${activeLoansList.length} active loans.`);
+
     let lateCount = 0;
+    let monthlyGain = 0;
     const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0);
 
     activeLoansList.forEach(l => {
+      // Count late loans
       if (l.schedule.some(q => new Date(q.dueDate) < todayMidnight && q.status === 'pending')) lateCount++;
+
+      // Calculate monthly gain (interest due this month)
+      l.schedule.forEach(q => {
+        const dueDate = new Date(q.dueDate);
+        if (dueDate >= startOfMonth && dueDate <= endOfMonth) {
+          // console.log(`[DEBUG] Loan ${l._id} Installment due ${dueDate.toISOString()} Interest: ${q.interest}`);
+          monthlyGain += (q.interest || 0);
+        }
+      });
     });
+    console.log(`[DEBUG] Total Monthly Gain: ${monthlyGain}`);
 
     // Preparar respuesta
     const pStats = portfolioStats[0] || { totalBalance: 0, totalInterest: 0, totalCurrentCapital: 0 };
@@ -110,6 +125,7 @@ exports.getGeneralStats = async (req, res) => {
       lentMonth,
       lateLoans: lateCount,
       availableCapital: totalCapital,
+      monthlyGain, // <--- Ganancia Mensual (Interés del mes)
       chartData: formattedChartData // <--- ESTO ES LO NUEVO PARA EL GRÁFICO
     });
 

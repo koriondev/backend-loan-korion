@@ -6,7 +6,7 @@ const User = require('../models/User');
 const authMiddleware = require('../middleware/authMiddleware');
 
 // CLAVE SECRETA
-const JWT_SECRET = 'korion_secret_key_123'; 
+const JWT_SECRET = 'korion_secret_key_123';
 
 // 1. REGISTRAR USUARIO
 router.post('/register', async (req, res) => {
@@ -41,28 +41,34 @@ router.post('/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: "Contraseña incorrecta" });
 
- // ... dentro de router.post('/login') ...
+    // ... dentro de router.post('/login') ...
 
     // Crear Token (El pase VIP)
     const token = jwt.sign(
-      { 
-        id: user._id, 
+      {
+        id: user._id,
         role: user.role,
         businessId: user.businessId // <--- ¡ESTA LÍNEA ES LA QUE HACE LA MAGIA!
-      }, 
-      JWT_SECRET, 
+      },
+      JWT_SECRET,
       { expiresIn: '1d' }
     );
 
-    res.json({ 
-      token, 
-      user: { 
-        id: user._id, 
-        name: user.name, 
-        email: user.email, 
+    // Obtener configuración de la empresa para saber qué módulos están activos
+    const Settings = require('../models/Settings');
+    const settings = await Settings.findOne({ businessId: user.businessId });
+    const enabledModules = settings ? settings.enabledModules : [];
+
+    res.json({
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
         role: user.role,
-        businessId: user.businessId // También lo devolvemos por si acaso
-      } 
+        businessId: user.businessId,
+        enabledModules // <--- Enviamos los módulos permitidos
+      }
     });
 
   } catch (error) {
@@ -74,7 +80,15 @@ router.post('/login', async (req, res) => {
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
-    res.json(user);
+    
+    // Obtener configuración actualizada
+    const Settings = require('../models/Settings');
+    const settings = await Settings.findOne({ businessId: user.businessId });
+    
+    const userObj = user.toObject();
+    userObj.enabledModules = settings ? settings.enabledModules : [];
+
+    res.json(userObj);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

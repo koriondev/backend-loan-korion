@@ -12,6 +12,7 @@ const LoanSchema = new mongoose.Schema({
 
   // Lógica Rédito (Regla de los 1000)
   accumulatedCapitalAbone: { type: Number, default: 0 }, // "La alcancía" para juntar los 1000
+  paidLateFee: { type: Number, default: 0 }, // Mora pagada acumulada
 
   duration: { type: Number, default: 0 }, // 0 = Indefinido (Rédito)
   frequency: { type: String, required: true },

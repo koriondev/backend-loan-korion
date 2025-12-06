@@ -6,6 +6,7 @@ const Transaction = require('../models/Transaction');
 const Settings = require('../models/Settings');
 const Product = require('../models/Product');
 const notificationController = require('./notificationController');
+const { generateReceiptPDF } = require('../utils/pdfGenerator');
 
 // Función auxiliar fechas
 const getNextDate = (startDate, index, freq, settings, paymentDaysMode) => {
@@ -525,7 +526,9 @@ exports.getLoans = async (req, res) => {
 
       // CALCULAR MORA ACTUAL PARA ENVIAR AL FRONTEND
       const overdueCount = loan.schedule.filter(q => q.status === 'pending' && new Date(q.dueDate) < today).length;
-      const lateFee = calculateLateFee(loan, overdueCount, settings);
+      const calculatedLateFee = calculateLateFee(loan, overdueCount, settings);
+      const paidLateFee = loan.paidLateFee || 0;
+      const lateFee = Math.max(0, calculatedLateFee - paidLateFee);
 
       return {
         ...loan.toObject(),
@@ -568,7 +571,11 @@ exports.registerPayment = async (req, res) => {
     // Recalcular mora actual para validación
     const today = new Date();
     const overdueInstallments = loan.schedule.filter(q => q.status === 'pending' && new Date(q.dueDate) <= today).length;
-    const totalLateFee = calculateLateFee(loan, overdueInstallments);
+    const totalCalculatedLateFee = calculateLateFee(loan, overdueInstallments);
+
+    // FIX: Restar lo que ya se ha pagado de mora
+    const paidLateFee = loan.paidLateFee || 0;
+    const totalLateFee = Math.max(0, totalCalculatedLateFee - paidLateFee);
 
     // Calcular deuda total real para validación
     let totalRealDebt = loan.balance + totalLateFee;
@@ -605,6 +612,9 @@ exports.registerPayment = async (req, res) => {
       const moraToPay = Math.min(remainingPayment, totalLateFee);
       appliedToMora = moraToPay;
       remainingPayment -= moraToPay;
+
+      // Actualizar mora pagada en el préstamo
+      loan.paidLateFee = (loan.paidLateFee || 0) + appliedToMora;
     }
 
     // B. Cobrar Intereses y Capital (Iterando cuotas)
@@ -615,7 +625,7 @@ exports.registerPayment = async (req, res) => {
       if (currentPayment <= 0) break;
       let q = loan.schedule[i];
 
-      if (q.status === 'pending') {
+      if (q.status === 'pending' || q.status === 'partial') {
         // FIX: En Rédito, si la cuota es futura y ya pagamos la actual (o no hay vencidas), NO seguir pagando intereses futuros.
         // Priorizar Capital.
         if (loan.lendingType === 'redito') {
@@ -748,11 +758,14 @@ exports.registerPayment = async (req, res) => {
     await wallet.save({ session });
 
     // D. Registrar Transacción
+    const receiptId = `REC-${Date.now().toString().slice(-6)}`;
+
     const transaction = new Transaction({
       type: 'in_payment',
       amount: amount,
       category: 'Pago Préstamo',
       description: `Pago Préstamo #${loan._id.toString().slice(-6)} (Mora: ${appliedToMora})`,
+      receiptId: receiptId,
       client: clientId,
       wallet: walletId,
       businessId: req.user.businessId,
@@ -772,12 +785,26 @@ exports.registerPayment = async (req, res) => {
 
     // NOTIFICACIÓN: Pago Recibido
     try {
+      // 5. Notificar
       await notificationController.createNotification(
-        req.user.businessId,
+        loan.businessId,
         'payment',
-        `Pago de $${amount} recibido para préstamo #${loan._id.toString().slice(-6)}`,
+        `💰 Pago de $${amount} recibido de ${client.name}. Recibo #${receiptId}. Nuevo Saldo: $${loan.balance}`,
         transaction._id
       );
+
+      // 6. Generar y Enviar PDF por Telegram
+      const settings = await Settings.findOne({ businessId: loan.businessId });
+      if (settings && settings.telegram && settings.telegram.enabled) {
+        const pdfBuffer = await generateReceiptPDF(transaction, client, loan, settings);
+        await notificationController.sendTelegramDocument(
+          loan.businessId,
+          `📄 Recibo de Pago #${receiptId}`,
+          pdfBuffer,
+          `Recibo_${client.name.replace(/\s+/g, '_')}_${receiptId}.pdf`
+        );
+      }
+
     } catch (notifError) {
       console.error('Error creando notificación de pago:', notifError);
     }

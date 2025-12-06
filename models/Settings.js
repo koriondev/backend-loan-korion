@@ -25,6 +25,20 @@ const SettingsSchema = new mongoose.Schema({
   // Recibos
   receiptFooter: { type: String, default: 'Gracias por su pago.' },
 
+  // Integraciones
+  telegram: {
+    botToken: { type: String, default: '' },
+    chatId: { type: String, default: '' },
+    enabled: { type: Boolean, default: false },
+    schedule: { type: [String], default: ["08:00", "12:00", "17:00"] } // Horarios de resumen
+  },
+
+  // Módulos Habilitados
+  enabledModules: {
+    type: [String],
+    default: ['dashboard', 'wallet', 'history', 'arrears', 'loans', 'loansv2', 'clients', 'collector', 'routes', 'reports', 'config']
+  },
+
   updatedAt: { type: Date, default: Date.now }
 });
 
