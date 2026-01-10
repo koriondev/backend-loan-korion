@@ -85,7 +85,17 @@ router.post('/login', async (req, res) => {
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
-    res.json(user);
+
+    // Fetch settings to include enabledModules
+    const Settings = require('../models/Settings');
+    const settings = await Settings.findOne({ businessId: user.businessId });
+    const enabledModules = settings ? settings.enabledModules : [];
+
+    // Return user object + enabledModules
+    res.json({
+      ...user.toObject(),
+      enabledModules
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
