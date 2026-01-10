@@ -6,7 +6,8 @@ const authMiddleware = (req, res, next) => {
   if (!token) return res.status(401).json({ message: 'Acceso denegado.' });
 
   try {
-    const verified = jwt.verify(token, 'korion_secret_key_123');
+    const secret = process.env.JWT_SECRET || 'korion_secret_key_123';
+    const verified = jwt.verify(token, secret);
     req.user = verified; // Aquí viene { id, role, businessId }
 
     // Lógica de Inyección de Scope (Alcance)
