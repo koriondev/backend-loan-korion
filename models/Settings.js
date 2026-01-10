@@ -33,6 +33,9 @@ const SettingsSchema = new mongoose.Schema({
     schedule: { type: [String], default: ["08:00", "12:00", "17:00"] } // Horarios de resumen
   },
 
+  // Módulos Activos
+  enabledModules: { type: [String], default: [] }, // Lista de IDs de módulos habilitados
+
   updatedAt: { type: Date, default: Date.now }
 });
 
