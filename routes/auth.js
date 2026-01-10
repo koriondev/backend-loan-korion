@@ -6,7 +6,12 @@ const User = require('../models/User');
 const authMiddleware = require('../middleware/authMiddleware');
 
 // CLAVE SECRETA
-const JWT_SECRET = 'korion_secret_key_123';
+// CLAVE SECRETA
+// CLAVE SECRETA
+if (!process.env.JWT_SECRET) {
+  throw new Error('FATAL: JWT_SECRET environment variable is not defined.');
+}
+const JWT_SECRET = process.env.JWT_SECRET;
 
 // 1. REGISTRAR USUARIO
 router.post('/register', async (req, res) => {
@@ -80,15 +85,7 @@ router.post('/login', async (req, res) => {
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
-    
-    // Obtener configuración actualizada
-    const Settings = require('../models/Settings');
-    const settings = await Settings.findOne({ businessId: user.businessId });
-    
-    const userObj = user.toObject();
-    userObj.enabledModules = settings ? settings.enabledModules : [];
-
-    res.json(userObj);
+    res.json(user);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

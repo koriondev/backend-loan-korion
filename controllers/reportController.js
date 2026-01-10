@@ -88,10 +88,7 @@ exports.getGeneralStats = async (req, res) => {
     const totalCapital = defaultWallet ? defaultWallet.balance : 0;
 
     // Mora simple y Ganancia Mensual
-    console.log(`[DEBUG] Calculating stats for Business: ${businessIdStr}`);
     const activeLoansList = await Loan.find({ status: 'active', businessId: businessIdStr });
-    console.log(`[DEBUG] Found ${activeLoansList.length} active loans.`);
-
     let lateCount = 0;
     let monthlyGain = 0;
     const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0);
@@ -104,12 +101,10 @@ exports.getGeneralStats = async (req, res) => {
       l.schedule.forEach(q => {
         const dueDate = new Date(q.dueDate);
         if (dueDate >= startOfMonth && dueDate <= endOfMonth) {
-          // console.log(`[DEBUG] Loan ${l._id} Installment due ${dueDate.toISOString()} Interest: ${q.interest}`);
           monthlyGain += (q.interest || 0);
         }
       });
     });
-    console.log(`[DEBUG] Total Monthly Gain: ${monthlyGain}`);
 
     // Preparar respuesta
     const pStats = portfolioStats[0] || { totalBalance: 0, totalInterest: 0, totalCurrentCapital: 0 };

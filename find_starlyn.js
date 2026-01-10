@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const Client = require('./models/Client');
-require('dotenv').config({ path: './backend/.env' });
+require('dotenv').config();
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/korionloan';
 
@@ -10,9 +10,9 @@ mongoose.connect(MONGO_URI)
 
         const clients = await Client.find({
             $or: [
-                { name: { $regex: /acevedo/i } },
-                { firstName: { $regex: /acevedo/i } },
-                { lastName: { $regex: /acevedo/i } }
+                { name: { $regex: /starlyn/i } },
+                { firstName: { $regex: /starlyn/i } },
+                { lastName: { $regex: /starlyn/i } }
             ]
         });
 

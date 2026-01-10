@@ -82,5 +82,8 @@ app.get('/', (req, res) => {
 const initScheduler = require('./services/schedulerService');
 initScheduler();
 
+// Keep Alive (Optimization)
+// require('./services/keep_alive')(); // Uncomment if using self-ping strategy
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Servidor corriendo en puerto ${PORT}`));

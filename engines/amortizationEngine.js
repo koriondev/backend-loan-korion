@@ -123,28 +123,22 @@ const generateReditoSchedule = (params) => {
         settings
     );
 
-    const schedule = dueDates.map((dueDate, index) => {
-        const isLast = index === dueDates.length - 1;
-        // If duration is set (>0), the last installment pays back the capital
-        const capitalPayment = (duration > 0 && isLast) ? amount : 0;
-
-        return {
-            number: index + 1,
-            dueDate: dueDate,
-            amount: interestAmount + capitalPayment,
-            capital: capitalPayment, // Capital is paid at the end if fixed duration
-            interest: interestAmount,
-            penaltyGenerated: 0,
-            capitalPaid: 0,
-            interestPaid: 0,
-            penaltyPaid: 0,
-            paidAmount: 0,
-            paidDate: null,
-            status: 'pending',
-            balance_start: amount,
-            balance_after: (duration > 0 && isLast) ? 0 : amount // Balance drops to 0 after last payment if fixed duration
-        };
-    });
+    const schedule = dueDates.map((dueDate, index) => ({
+        number: index + 1,
+        dueDate: dueDate,
+        amount: interestAmount,
+        capital: 0, // Capital not fixed per installment
+        interest: interestAmount,
+        penaltyGenerated: 0,
+        capitalPaid: 0,
+        interestPaid: 0,
+        penaltyPaid: 0,
+        paidAmount: 0,
+        paidDate: null,
+        status: 'pending',
+        balance_start: amount,
+        balance_after: amount // Capital doesn't decrease automatically
+    }));
 
     const summary = {
         interestTotal: interestAmount * schedule.length,

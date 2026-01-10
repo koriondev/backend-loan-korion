@@ -741,7 +741,7 @@ exports.registerPayment = async (req, res) => {
     // El código original hacía `client.balance = loan.balance`. Esto estaba MAL si hay múltiples préstamos.
     // Vamos a cambiarlo a decremento.
 
-    const amountToReduceClientBalance = appliedToCapital + appliedToInterest; // Asumiendo que el balance incluye intereses.
+    const amountToReduceClientBalance_legacy = appliedToCapital + appliedToInterest; // Renaming to avoid conflict, though this line seems unused now.
     // Si es Rédito, createLoan sumaba `(interestAmount * finalTerm) + finalAmount`.
     // Entonces sí, pagar interés reduce deuda.
 
@@ -750,8 +750,18 @@ exports.registerPayment = async (req, res) => {
     // Si `loan.balance` solo trackea capital, entonces `client.balance = loan.balance` es INCORRECTO porque borra los intereses del cliente.
 
     // FIX: Usar $inc en el cliente.
+    // Calcular cuánto reducir el balance del cliente
+    let amountToReduceClientBalance = 0;
+    if (loan.lendingType === 'redito') {
+      // En Rédito, el balance del cliente (deuda principal) solo baja si se abona a capital
+      amountToReduceClientBalance = appliedToCapital;
+    } else {
+      // En otros, el balance incluye intereses, así que todo lo pagado (menos mora) reduce la deuda
+      amountToReduceClientBalance = appliedToCapital + appliedToInterest;
+    }
+
     await Client.findByIdAndUpdate(clientId, {
-      $inc: { balance: -(appliedToCapital + appliedToInterest) }
+      $inc: { balance: -amountToReduceClientBalance }
     }).session(session);
 
     wallet.balance += amount;

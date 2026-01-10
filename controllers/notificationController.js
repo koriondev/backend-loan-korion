@@ -9,6 +9,15 @@ const sendTelegramMessage = async (businessId, message) => {
     try {
         const settings = await Settings.findOne({ businessId });
         if (settings && settings.telegram && settings.telegram.enabled && settings.telegram.botToken && settings.telegram.chatId) {
+
+            // --- WHITELIST CHECK ---
+            const whitelist = (process.env.TELEGRAM_WHITELIST || '').split(',');
+            if (whitelist.length > 0 && !whitelist.includes(String(settings.telegram.chatId))) {
+                console.warn(`Blocked Telegram attempt to unauthorized ChatID: ${settings.telegram.chatId}`);
+                return;
+            }
+            // -----------------------
+
             const url = `https://api.telegram.org/bot${settings.telegram.botToken}/sendMessage`;
             const body = {
                 chat_id: settings.telegram.chatId,
@@ -26,6 +35,16 @@ const sendTelegramMessage = async (businessId, message) => {
     } catch (error) {
         console.error('Error sending Telegram message:', error);
     }
+};
+
+// Helper: Mask Client Name
+const maskName = (name) => {
+    if (!name || name.length <= 3) return name;
+    const parts = name.split(' ');
+    if (parts.length > 1) {
+        return `${parts[0]} ${parts[1].slice(0, 1)}...`;
+    }
+    return `${name.slice(0, 3)}...`;
 };
 
 // Helper to create notification
@@ -82,7 +101,7 @@ exports.getNotifications = async (req, res) => {
                     await exports.createNotification(
                         businessId,
                         'payment_due',
-                        `El préstamo de ${loan.client.name} vence hoy.`,
+                        `El préstamo de ${maskName(loan.client.name)} vence hoy.`,
                         loan._id
                     );
                 }
@@ -102,7 +121,7 @@ exports.getNotifications = async (req, res) => {
                     await exports.createNotification(
                         businessId,
                         'overdue',
-                        `El préstamo de ${loan.client.name} está atrasado.`,
+                        `El préstamo de ${maskName(loan.client.name)} está atrasado.`,
                         loan._id
                     );
                 }
