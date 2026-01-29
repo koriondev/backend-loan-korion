@@ -44,6 +44,8 @@ router.get('/:id', loanControllerV2.getLoanById);
  * @access  Private
  */
 router.get('/:id/schedule', loanControllerV2.getLoanSchedule);
+router.post('/:id/approve', loanControllerV2.approveLoan);
+router.post('/:id/reject', loanControllerV2.rejectLoan);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PAYMENTS
@@ -55,5 +57,6 @@ router.get('/:id/schedule', loanControllerV2.getLoanSchedule);
  * @access  Private
  */
 router.post('/:id/payments', loanControllerV2.registerPayment);
+router.get('/:id/payments', loanControllerV2.getLoanPayments);
 
 module.exports = router;

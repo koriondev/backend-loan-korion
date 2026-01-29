@@ -141,9 +141,9 @@ const generateReditoSchedule = (params) => {
     }));
 
     const summary = {
-        interestTotal: interestAmount * schedule.length,
+        interestTotal: 0, // Interest is variable in Redito
         capitalTotal: amount,
-        totalToPay: (interestAmount * schedule.length) + amount,
+        totalToPay: amount, // For Redito, initial total debt is just capital
         installmentCount: schedule.length
     };
 
