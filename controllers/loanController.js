@@ -244,9 +244,9 @@ const calculateLateFee = (loan, overdueInstallmentsCount, settings) => {
     return deadline;
   };
 
-  // Get the oldest overdue installment (PENDING or PARTIAL)
+  // Get the oldest overdue installment (STRICTLY PENDING)
   const overdueQuotas = loan.schedule.filter(q => {
-    if (q.status === 'paid') return false;
+    if (q.status !== 'pending') return false;
     const dueDate = new Date(q.dueDate);
     return dueDate < startOfToday;
   });
@@ -616,7 +616,7 @@ exports.getLoans = async (req, res) => {
       if (loan.balance <= 0.1 && loan.status !== 'paid') {
         newStatus = 'paid';
       } else if (newStatus !== 'paid' && newStatus !== 'bad_debt') {
-        const hasOverdue = loan.schedule?.some(q => q.status !== 'paid' && new Date(q.dueDate) < today);
+        const hasOverdue = loan.schedule?.some(q => q.status === 'pending' && new Date(q.dueDate) < today);
         if (hasOverdue && newStatus !== 'past_due') {
           newStatus = 'past_due';
         } else if (!hasOverdue && newStatus === 'past_due') {
@@ -634,7 +634,7 @@ exports.getLoans = async (req, res) => {
         } catch (e) { }
       }
 
-      const overdueCount = (loan.schedule || []).filter(q => q.status !== 'paid' && new Date(q.dueDate) < today).length;
+      const overdueCount = (loan.schedule || []).filter(q => q.status === 'pending' && new Date(q.dueDate) < today).length;
       const calculatedLateFee = calculateLateFee(loan, overdueCount, settings);
       const paidLateFee = loan.paidLateFee || 0;
       const lateFee = Math.max(0, calculatedLateFee - paidLateFee);
@@ -1539,7 +1539,7 @@ exports.getLoan = async (req, res) => {
     // Calcular Mora (esto podría variar entre modelos, pero por ahora usamos la lógica genérica)
     const today = new Date();
     const settings = await Settings.findOne({ businessId: req.user.businessId });
-    const overdueCount = loan.schedule?.filter(q => q.status !== 'paid' && new Date(q.dueDate) < today).length || 0;
+    const overdueCount = loan.schedule?.filter(q => q.status === 'pending' && new Date(q.dueDate) < today).length || 0;
     const lateFee = calculateLateFee(loan, overdueCount, settings);
 
     res.json({ ...loan.toObject(), lateFee: lateFee || 0, modelType });
@@ -1657,7 +1657,7 @@ exports.recalculateOverdue = async (req, res) => {
 
       // Recalculate overdue count with corrected logic
       const overdueQuotas = loan.schedule.filter(q => {
-        if (q.status === 'paid') return false;
+        if (q.status !== 'pending') return false;
         const dueDate = new Date(q.dueDate);
         return dueDate < startOfToday; // Overdue after midnight
       });
