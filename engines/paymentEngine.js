@@ -7,6 +7,8 @@
  * Order: Penalty → Interest → Capital
  */
 
+const { getPeriodicRate } = require('./amortizationEngine');
+
 /**
  * Distribute payment amount across loan obligations
  * @param {Object} loan - LoanV2 instance
@@ -25,6 +27,19 @@ const distributePayment = (loan, amount, currentPenalty) => {
         isFullPayoff: false,
         remainingBalance: 0
     };
+
+    // Determine the active period for Redito to prevent pre-paying future interest
+    let activeReditoInstallmentNum = -1;
+    if (loan.lendingType === 'redito' && loan.schedule && loan.schedule.length > 0) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const activeInst = loan.schedule.find(i => new Date(i.dueDate) >= today);
+        if (activeInst) {
+            activeReditoInstallmentNum = activeInst.number;
+        } else {
+            activeReditoInstallmentNum = loan.schedule[loan.schedule.length - 1].number;
+        }
+    }
 
     // 1. Apply to Penalty first
     const pendingPenalty = Math.max(0, currentPenalty.totalPenalty - (loan.penaltyConfig.paidPenalty || 0));
@@ -52,7 +67,13 @@ const distributePayment = (loan, amount, currentPenalty) => {
         };
 
         // 2a. Pay Interest
-        const pendingInterest = (inst.interest || 0) - (inst.interestPaid || 0);
+        let pendingInterest = (inst.interest || 0) - (inst.interestPaid || 0);
+
+        // EXTRA LOGIC FOR REDITO: Do not pre-pay future interest periods if up to date
+        if (loan.lendingType === 'redito' && inst.number > activeReditoInstallmentNum) {
+            pendingInterest = 0;
+        }
+
         if (pendingInterest > 0) {
             const interestPayment = Math.min(remainingPayment, pendingInterest);
             installmentUpdate.interestPaid = interestPayment;
@@ -147,6 +168,19 @@ const applyPaymentToLoan = (loan, distribution) => {
     // Update loan balance
     if (loan.lendingType === 'redito') {
         loan.currentCapital -= distribution.appliedCapital;
+
+        // If capital was reduced, future interest installments need to be proportionally lowered
+        if (distribution.appliedCapital > 0 && loan.currentCapital > 0) {
+            const periodicRate = getPeriodicRate(loan.interestRateMonthly, loan.frequency);
+            const newInterestAmount = Math.round((loan.currentCapital * periodicRate) / 5) * 5;
+
+            loan.schedule.forEach(inst => {
+                if (inst.status === 'pending' && (!inst.interestPaid || inst.interestPaid === 0) && (!inst.capitalPaid || inst.capitalPaid === 0)) {
+                    inst.interest = newInterestAmount;
+                    inst.amount = newInterestAmount;
+                }
+            });
+        }
     } else {
         // For Fixed/Amortization, balance includes both capital and interest
         loan.currentCapital -= distribution.appliedCapital;
@@ -154,7 +188,7 @@ const applyPaymentToLoan = (loan, distribution) => {
 
     // Update financial model
     loan.financialModel.interestPaid = (loan.financialModel.interestPaid || 0) + distribution.appliedInterest;
-    loan.financialModel.interestPending = loan.financialModel.interestTotal - loan.financialModel.interestPaid;
+    loan.financialModel.interestPending = Math.max(0, loan.financialModel.interestTotal - loan.financialModel.interestPaid);
 
     // Update status
     if (distribution.isFullPayoff || loan.currentCapital <= 0.1) {

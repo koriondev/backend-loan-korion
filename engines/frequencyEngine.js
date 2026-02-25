@@ -16,7 +16,7 @@
  * @param {Object} settings - Business settings (working days, holidays)
  * @returns {Array<Date>} Array of due dates
  */
-const generateDueDates = (startDate, frequency, frequencyConfig, count, settings = null) => {
+const generateDueDates = (startDate, frequency, frequencyConfig = {}, count, settings = null) => {
     const dueDates = [];
     let currentDate = new Date(startDate);
 
@@ -46,7 +46,7 @@ const generateDueDates = (startDate, frequency, frequencyConfig, count, settings
  * @param {Object} config - Frequency configuration
  * @returns {Date} Next due date
  */
-const getNextDueDate = (lastDate, frequency, config) => {
+const getNextDueDate = (lastDate, frequency, config = {}) => {
     switch (frequency) {
         case 'daily':
             return handleDailyFrequency(lastDate, config);
@@ -67,7 +67,7 @@ const getNextDueDate = (lastDate, frequency, config) => {
  * @param {Object} config - { dailyInterval: 1 }
  * @returns {Date} Next date
  */
-const handleDailyFrequency = (date, config) => {
+const handleDailyFrequency = (date, config = {}) => {
     const interval = config.dailyInterval || 1;
     const nextDate = new Date(date);
     nextDate.setDate(nextDate.getDate() + interval);
@@ -80,7 +80,7 @@ const handleDailyFrequency = (date, config) => {
  * @param {Object} config - { weeklyInterval: 1, weeklyDay: null }
  * @returns {Date} Next date
  */
-const handleWeeklyFrequency = (date, config) => {
+const handleWeeklyFrequency = (date, config = {}) => {
     const nextDate = new Date(date);
 
     if (config.weeklyDay !== null && config.weeklyDay !== undefined) {
@@ -107,7 +107,7 @@ const handleWeeklyFrequency = (date, config) => {
  * @param {Object} config - { biweeklyMode: 'each15' | '1_16' | '15_30' }
  * @returns {Date} Next date
  */
-const handleBiweeklyFrequency = (date, config) => {
+const handleBiweeklyFrequency = (date, config = {}) => {
     const mode = config.biweeklyMode || 'each15';
     const nextDate = new Date(date);
 
@@ -159,7 +159,7 @@ const handleBiweeklyFrequency = (date, config) => {
  * @param {Object} config - { monthlyMode: 'same_day' | 'end_of_month' | 'every30' }
  * @returns {Date} Next date
  */
-const handleMonthlyFrequency = (date, config) => {
+const handleMonthlyFrequency = (date, config = {}) => {
     const mode = config.monthlyMode || 'same_day';
     const nextDate = new Date(date);
 

@@ -1,5 +1,7 @@
 const mongoose = require('mongoose');
 const Loan = require('../models/Loan');
+const LoanV2 = require('../models/LoanV2');
+const LoanV3 = require('../models/LoanV3');
 const Client = require('../models/Client');
 const Wallet = require('../models/Wallet');
 const Transaction = require('../models/Transaction');
@@ -7,6 +9,7 @@ const Settings = require('../models/Settings');
 const Product = require('../models/Product');
 const notificationController = require('./notificationController');
 const { generateReceiptPDF } = require('../utils/pdfGenerator');
+const financeController = require('./financeController');
 
 // Función auxiliar fechas
 const getNextDate = (startDate, index, freq, settings, paymentDaysMode) => {
@@ -307,11 +310,16 @@ exports.previewLoan = async (req, res) => {
 
 // 1. CREAR PRÉSTAMO
 exports.createLoan = async (req, res) => {
+  return res.status(400).json({ error: "La creación de préstamos en la versión V1 ha sido deshabilitada. Por favor, actualiza a la versión V3." });
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const { clientId, productId, amount, interestRate, duration, frequency, type, lendingType } = req.body;
+    const {
+      clientId, productId, amount, interestRate, duration, frequency, type, lendingType,
+      fundingWalletId, revenueShare
+    } = req.body;
 
     console.log('=== CREATE LOAN DEBUG ===');
     console.log('Body:', JSON.stringify(req.body, null, 2));
@@ -362,11 +370,38 @@ exports.createLoan = async (req, res) => {
       paymentDaysMode // Nuevo parámetro
     );
 
-    // Validar Caja
-    let wallet = await Wallet.findOne({ isDefault: true, businessId: req.user.businessId }).session(session);
-    if (!wallet) wallet = await Wallet.findOne({ businessId: req.user.businessId }).session(session);
+    // B2. VALIDAR CARTERA (FONDEO)
+    let wallet;
+    if (fundingWalletId) {
+      wallet = await Wallet.findById(fundingWalletId).session(session);
+    } else {
+      // Fallback: buscar default (NO RECOMENDADO en nueva lógica, pero por compatibilidad)
+      wallet = await Wallet.findOne({ isDefault: true, businessId: req.user.businessId }).session(session);
+      if (!wallet) wallet = await Wallet.findOne({ businessId: req.user.businessId }).session(session);
+    }
 
-    if (!wallet || wallet.balance < finalAmount) throw new Error("Fondos insuficientes en caja.");
+    if (!wallet) throw new Error("Cartera de fondos no encontrada.");
+
+    // Validación de Fondos
+    if (wallet.balance < finalAmount) {
+      throw new Error(`Fondos insuficientes en cartera ${wallet.name}. Disponible: ${wallet.balance}, Requerido: ${finalAmount}`);
+    }
+
+    // B3. LÓGICA DE APROBACIÓN
+    // Si el usuario actual es el DUEÑO de la cartera -> Aprobado Automático
+    // Si no -> Pendiente de Aprobación
+    const currentUserId = req.user._id || req.user.id;
+    const isOwner = wallet.ownerId && currentUserId && wallet.ownerId.toString() === currentUserId.toString();
+    // También aprobamos automáticamente si es Admin (opcional, pero estricto según requerimiento: Solo Dueño)
+    // El requerimiento dice: "Si el usuario que crea es el Dueño... auto-aprobación."
+
+    let initialStatus = 'active';
+    let approvalStatus = 'approved';
+
+    if (!isOwner) {
+      initialStatus = 'pending_approval';
+      approvalStatus = 'pending';
+    }
 
     const newLoan = new Loan({
       client: clientId,
@@ -376,36 +411,52 @@ exports.createLoan = async (req, res) => {
       interestRate: finalRate,
       duration: finalTerm,
       frequency: finalFreq,
-      type: finalType,
+      type: finalType, // Legacy
       lendingType: finalType,
-      status: 'active',
+
+      status: initialStatus,        // <--- APPROVAL STATUS
+      approvalStatus: approvalStatus, // <--- APPROVAL STATUS
+      fundingWallet: wallet._id,    // <--- SOURCE WALLET
+      investorId: req.body.investorId, // <--- NEW
+      managerId: req.body.managerId,   // <--- NEW
+      revenueShare: { // <--- PROFIT SPLIT
+        investorPercentage: revenueShare?.investorPercentage || 45,
+        managerPercentage: revenueShare?.managerPercentage || 35,
+        platformPercentage: revenueShare?.platformPercentage || 20
+      },
+
       totalToPay: totalToPay,
-      balance: totalToPay, // Balance inicial = Total a Pagar (o Capital si es rédito, ajustado luego)
-      currentCapital: finalAmount, // Base de cálculo
+      balance: totalToPay, // Balance inicial = Total a Pagar
       schedule: schedule,
       penaltyConfig: finalPenaltyConfig, // <--- GUARDAR CONFIG
-      createdAt: new Date()
+      createdAt: loanStartDate
     });
 
-    // Ajuste específico para Rédito: Balance = Capital (Interés se genera con el tiempo)
+    // Ajuste específico para Rédito
     if (finalType === 'redito') {
       newLoan.balance = finalAmount;
     }
 
-    // MIGRACIÓN: Marcar cuotas como pagadas si se especificó
+    // MIGRACIÓN: Marcar cuotas como pagadas (SOLO SI SE APRUEBA DIRECTO)
+    // Si queda pendiente, NO marcamos pagadas aún (o sí? Migración asume activo...). 
+    // Asumiremos que si es migración (paidInstallments > 0) el usuario tiene permisos o es admin/dueño.
     const { paidInstallments } = req.body;
-    // loanStartDate ya fue calculado arriba
 
     if (paidInstallments && paidInstallments > 0) {
+      // ... (Lógica de migración omitida por brevedad, asumiendo activo si es migración, 
+      // pero por seguridad deberíamos forzar active si es migración para no bloquear datos históricos)
+      // Para simplificar, si es migración forzamos activo
+      newLoan.status = 'active';
+      newLoan.approvalStatus = 'approved';
+
       let totalPaidAmount = 0;
       let paidCapital = 0;
       let paidInterest = 0;
 
-      // Marcar las primeras N cuotas como pagadas
       for (let i = 0; i < Math.min(paidInstallments, newLoan.schedule.length); i++) {
         const installment = newLoan.schedule[i];
         installment.status = 'paid';
-        installment.paidDate = new Date(installment.dueDate); // Usar fecha de vencimiento como fecha de pago
+        installment.paidDate = new Date(installment.dueDate);
         installment.paidAmount = installment.amount;
         installment.paidInterest = installment.interest || 0;
         installment.paidCapital = installment.capital || 0;
@@ -415,33 +466,34 @@ exports.createLoan = async (req, res) => {
         paidCapital += installment.capital || 0;
       }
 
-      // Ajustar balance del préstamo
       if (finalType === 'redito') {
-        // En Rédito, el balance es el capital (no cambia con pagos de interés)
         newLoan.balance = finalAmount;
       } else {
-        // En otros tipos, restar el capital pagado
         newLoan.balance -= paidCapital;
       }
 
-      // Actualizar el balance del cliente (solo lo que falta por pagar)
       await Client.findByIdAndUpdate(clientId, {
         status: 'active',
-        $inc: { balance: newLoan.balance }
+        $inc: { balance: newLoan.balance } // Solo sumar lo deuda restante
       }).session(session);
     } else {
-      // Sin migración, balance normal
-      await Client.findByIdAndUpdate(clientId, {
-        status: 'active',
-        $inc: { balance: totalToPay }
-      }).session(session);
+      // Préstamo Nuevo Normal
+      if (newLoan.status === 'active') {
+        // Solo sumar al cliente si está activo (o esperar a aprobación?)
+        // Usualmente se suma deuda al crear.
+        await Client.findByIdAndUpdate(clientId, {
+          status: 'active',
+          $inc: { balance: totalToPay } // En rédito sería +Capital? No, +DeudaTotal? Revisar lógica cliente.
+          // En Rédito, client.balance suele ser Capital, porque interés se paga mensual.
+          // Si totalToPay incluye intereses futuros...
+          // Si es rédito: totalToPay = Capital + Interés * Terms.
+          // Mejor sumar balance inicial del préstamo.
+        }).session(session);
+      }
     }
 
-    // Usar fecha personalizada si se especificó
-    newLoan.createdAt = loanStartDate;
-
-    // FIX: Verificar si ya nace vencido (para préstamos migrados/históricos)
-    if (newLoan.status !== 'paid') {
+    // FIX: Verificar si ya nace vencido (si es activo)
+    if (newLoan.status === 'active') {
       const today = new Date();
       const hasOverdue = newLoan.schedule.some(q => q.status === 'pending' && new Date(q.dueDate) < today);
       if (hasOverdue) {
@@ -451,33 +503,59 @@ exports.createLoan = async (req, res) => {
 
     await newLoan.save({ session });
 
-    wallet.balance -= finalAmount;
-    await wallet.save({ session });
+    // C. ACTUALIZAR CARTERA (SOLO SI APROBADO)
+    if (newLoan.approvalStatus === 'approved') {
+      wallet.balance -= finalAmount;
+      // Evitar precisión flotante
+      wallet.balance = Math.round(wallet.balance * 100) / 100;
+      await wallet.save({ session });
 
-    const tx = new Transaction({
-      type: 'out_loan',
-      amount: finalAmount,
-      category: 'Desembolso',
-      description: `Préstamo #${newLoan._id.toString().slice(-6)} (${finalType})${paidInstallments ? ' - Migrado' : ''}`,
-      client: clientId,
-      wallet: wallet._id,
-      businessId: req.user.businessId,
-      date: loanStartDate // Usar fecha personalizada
-    });
-    await tx.save({ session });
+      const tx = new Transaction({
+        type: 'out_loan',
+        amount: finalAmount,
+        category: 'Desembolso',
+        description: `Préstamo #${newLoan._id.toString().slice(-6)} (${finalType})`,
+        client: clientId,
+        wallet: wallet._id,
+        businessId: req.user.businessId,
+        date: loanStartDate
+      });
+      await tx.save({ session });
+
+      // Notificación Aprobado
+      try {
+        await notificationController.createNotification(
+          req.user.businessId,
+          'loan_approved',
+          `Préstamo creado y desembolsado para ${clientId}. Monto: $${finalAmount}`,
+          newLoan._id
+        );
+      } catch (e) { }
+
+    } else {
+      // D. NOTIFICAR SOLICITUD DE APROBACIÓN (SI PENDIENTE)
+      try {
+        // Notificar al DUEÑO de la cartera
+        // Necesitamos saber el businessId del dueño, pero user.businessId es el mismo si es SaaS mismo tenant.
+        // Ojo: Si el dueño es otro usuario, hay que buscarlo?
+        // Notification.js tiene businessId, no userId específico. El frontend debe filtrar por rol o usuario?
+        // Por ahora notificamos al negocio en general con tipo approval_request.
+        await notificationController.createNotification(
+          req.user.businessId,
+          'approval_request',
+          `Solicitud de Aprobación: ${req.user.name} solicita usar fondos de cartera "${wallet.name}" para préstamo de $${finalAmount}`,
+          newLoan._id
+        );
+      } catch (e) {
+        console.error(e);
+      }
+    }
 
     await session.commitTransaction();
 
-    // NOTIFICACIÓN: Préstamo Aprobado
-    try {
-      await notificationController.createNotification(
-        req.user.businessId,
-        'loan_approved',
-        `Préstamo aprobado para ${clientId} por $${finalAmount}`,
-        newLoan._id
-      );
-    } catch (notifError) {
-      console.error('Error creando notificación de préstamo:', notifError);
+    // Sincronizar balance dinámicamente
+    if (newLoan.approvalStatus === 'approved') {
+      await financeController.recalculateWalletBalance(wallet._id);
     }
 
     res.status(201).json(newLoan);
@@ -495,23 +573,50 @@ exports.createLoan = async (req, res) => {
 exports.getLoans = async (req, res) => {
   try {
     const filter = req.businessFilter || { businessId: req.user.businessId };
-    const loans = await Loan.find(filter).populate('client', 'name').sort({ createdAt: -1 });
 
-    // Fetch settings for late fee calculation
+    // 1. Fetch V1
+    const loansV1 = await Loan.find(filter)
+      .populate('client', 'name')
+      .sort({ createdAt: -1 });
+
+    // 2. Fetch V2 (To show those 3 loans that were created during the test)
+    let mappedV2 = [];
+    try {
+      const loansV2 = await LoanV2.find({ ...filter, status: { $ne: 'rejected' } })
+        .populate('clientId', 'name')
+        .sort({ createdAt: -1 });
+
+      mappedV2 = loansV2.map(l => {
+        const obj = l.toObject();
+        return {
+          ...obj,
+          _isV2: true,
+          client: obj.clientId, // Normalize
+          interestRate: obj.interestRateMonthly, // Normalize
+          balance: obj.realBalance || obj.amount
+        };
+      });
+    } catch (e) { console.error("V2 fetch error:", e); }
+
+    const allLoansUnsorted = [...loansV1, ...mappedV2];
+
+    // Combined sort to ensure newest (V1 or V2) are always at the top
+    const allLoans = allLoansUnsorted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
     const settings = await Settings.findOne({ businessId: req.user.businessId });
-
-    // FIX: Actualizar estados de atraso automáticamente Y verificar si está pagado
     const today = new Date();
-    const updatedLoans = await Promise.all(loans.map(async (loan) => {
+
+    const updatedLoans = await Promise.all(allLoans.map(async (loanOrDoc) => {
+      const loan = (typeof loanOrDoc.toObject === 'function') ? loanOrDoc.toObject() : loanOrDoc;
+
+      if (loan._isV2) return loan;
+
       let newStatus = loan.status;
 
-      // 1. Check if Paid (Self-healing)
       if (loan.balance <= 0.1 && loan.status !== 'paid') {
         newStatus = 'paid';
-      }
-      // 2. Check Overdue (Only if not paid)
-      else if (newStatus !== 'paid' && newStatus !== 'bad_debt') {
-        const hasOverdue = loan.schedule.some(q => q.status === 'pending' && new Date(q.dueDate) < today);
+      } else if (newStatus !== 'paid' && newStatus !== 'bad_debt') {
+        const hasOverdue = loan.schedule?.some(q => q.status === 'pending' && new Date(q.dueDate) < today);
         if (hasOverdue && newStatus !== 'past_due') {
           newStatus = 'past_due';
         } else if (!hasOverdue && newStatus === 'past_due') {
@@ -520,18 +625,22 @@ exports.getLoans = async (req, res) => {
       }
 
       if (newStatus !== loan.status) {
-        loan.status = newStatus;
-        await loan.save();
+        try {
+          // Only save if it's a Mongoose doc (loanOrDoc)
+          if (typeof loanOrDoc.save === 'function') {
+            loanOrDoc.status = newStatus;
+            await loanOrDoc.save();
+          }
+        } catch (e) { }
       }
 
-      // CALCULAR MORA ACTUAL PARA ENVIAR AL FRONTEND
-      const overdueCount = loan.schedule.filter(q => q.status === 'pending' && new Date(q.dueDate) < today).length;
+      const overdueCount = (loan.schedule || []).filter(q => q.status === 'pending' && new Date(q.dueDate) < today).length;
       const calculatedLateFee = calculateLateFee(loan, overdueCount, settings);
       const paidLateFee = loan.paidLateFee || 0;
       const lateFee = Math.max(0, calculatedLateFee - paidLateFee);
 
       return {
-        ...loan.toObject(),
+        ...loan,
         lateFee: lateFee || 0
       };
     }));
@@ -764,8 +873,127 @@ exports.registerPayment = async (req, res) => {
       $inc: { balance: -amountToReduceClientBalance }
     }).session(session);
 
+    // D. REPARTO DE INGRESOS (REVENUE SPLIT)
+    // 1. El Dinero entra a la Caja Seleccionada por el Cobrador
     wallet.balance += amount;
     await wallet.save({ session });
+
+    // 2. Si el Préstamo tiene configuración de Reparto y Fondeo, procesamos el split
+    if ((appliedToInterest > 0 || appliedToCapital > 0 || appliedToMora > 0) && loan.fundingWallet) {
+
+      const totalProfit = appliedToInterest + appliedToMora;
+      const capitalToReturn = appliedToCapital;
+
+      // A. RETORNO DE CAPITAL (Al Fondeador)
+      // Sacamos de la caja del cobrador y mandamos a la cartera de fondeo
+      if (capitalToReturn > 0) {
+        const fundingWallet = await Wallet.findById(loan.fundingWallet).session(session);
+        if (fundingWallet && fundingWallet._id.toString() !== wallet._id.toString()) {
+          wallet.balance -= capitalToReturn;
+          fundingWallet.balance += capitalToReturn;
+          await wallet.save({ session });
+          await fundingWallet.save({ session });
+
+          // Transaction Record (Retorno)
+          await new Transaction({
+            businessId: loan.businessId,
+            type: 'entry',
+            category: 'Retorno de Capital',
+            amount: capitalToReturn,
+            description: `Retorno Cap. Préstamo #${loan._id.toString().slice(-6)}`,
+            wallet: fundingWallet._id,
+            loan: loan._id,
+            date: new Date()
+          }).save({ session });
+        }
+      }
+
+      // B. DISTRIBUCIÓN DE GANANCIAS (Profit Split)
+      if (totalProfit > 0 && loan.revenueShare) {
+        const share = loan.revenueShare;
+        const investorId = loan.investorId;
+        const managerId = loan.managerId;
+
+        const investorP = share.investorPercentage || 0;
+        const managerP = share.managerPercentage || 0;
+        const platformP = share.platformPercentage || share.systemPercentage || 0;
+
+        const investorAmount = (totalProfit * investorP) / 100;
+        const managerAmount = (totalProfit * managerP) / 100;
+        const platformAmount = (totalProfit * platformP) / 100;
+
+        // Helper para acreditar carteras de nómina/ganancias
+        const creditProfit = async (userId, profitAmount, label) => {
+          if (profitAmount <= 0 || !userId) return;
+
+          // Buscar cartera de ganancias del usuario
+          let userWallet = await Wallet.findOne({
+            ownerId: userId,
+            type: 'earnings',
+            businessId: loan.businessId,
+            currency: loan.currency || 'DOP'
+          }).session(session);
+
+          if (!userWallet) {
+            const currSuffix = loan.currency && loan.currency !== 'DOP' ? ` ${loan.currency}` : '';
+            userWallet = new Wallet({
+              name: `Ganancias - ${label}${currSuffix}`,
+              ownerId: userId,
+              type: 'earnings',
+              businessId: loan.businessId,
+              balance: 0,
+              currency: loan.currency || 'DOP'
+            });
+            await userWallet.save({ session });
+          }
+
+          // Transferencia: Caja Cobrador -> User Wallet
+          wallet.balance -= profitAmount;
+          userWallet.balance += profitAmount;
+          await wallet.save({ session });
+          await userWallet.save({ session });
+
+          // Registro
+          await new Transaction({
+            businessId: loan.businessId,
+            type: 'dividend_distribution',
+            category: `Ganancia ${label}`,
+            amount: profitAmount,
+            description: `Split Préstamo #${loan._id.toString().slice(-6)}`,
+            wallet: userWallet._id,
+            metadata: { role: label, loanId: loan._id },
+            date: new Date()
+          }).save({ session });
+        };
+
+        await creditProfit(investorId, investorAmount, 'Inversionista');
+        await creditProfit(managerId, managerAmount, 'Gestor');
+
+        // C. PLATAFORMA / FONDO OPERATIVO
+        if (platformAmount > 0) {
+          // Platform Share -> Transfer to default expense wallet
+          let platformWallet = await Wallet.findOne({ type: 'expense', businessId: loan.businessId, currency: loan.currency || 'DOP' }).session(session);
+          if (!platformWallet) platformWallet = await Wallet.findOne({ isDefault: true, businessId: loan.businessId, currency: loan.currency || 'DOP' }).session(session);
+
+          if (platformWallet && platformWallet._id.toString() !== wallet._id.toString()) {
+            wallet.balance -= platformAmount;
+            platformWallet.balance += platformAmount;
+            await wallet.save({ session });
+            await platformWallet.save({ session });
+
+            await new Transaction({
+              businessId: loan.businessId,
+              type: 'dividend_distribution',
+              category: 'Comisión Plataforma',
+              amount: platformAmount,
+              description: `Split Préstamo #${loan._id.toString().slice(-6)}`,
+              wallet: platformWallet._id,
+              date: new Date()
+            }).save({ session });
+          }
+        }
+      }
+    }
 
     // D. Registrar Transacción
     const receiptId = `REC-${Date.now().toString().slice(-6)}`;
@@ -792,6 +1020,14 @@ exports.registerPayment = async (req, res) => {
     await transaction.save({ session });
 
     await session.commitTransaction();
+
+    // Sincronizar balances dinámicamente
+    try {
+      await financeController.recalculateWalletBalance(walletId);
+      if (loan.fundingWallet) await financeController.recalculateWalletBalance(loan.fundingWallet);
+    } catch (recalcError) {
+      console.error('Error recalculando balances post-pago:', recalcError);
+    }
 
     // NOTIFICACIÓN: Pago Recibido
     try {
@@ -1082,14 +1318,57 @@ exports.deleteLoan = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const loan = await Loan.findById(req.params.id).session(session);
-    if (!loan) throw new Error("Préstamo no encontrado");
+    // Support legacy Loan, LoanV2, and new LoanV3 Models
+    console.log(`🔍 Intentando eliminar préstamo con ID: "${req.params.id}"`);
+
+    let loan = await Loan.findById(req.params.id).session(session);
+    let modelType = 'V1';
+    console.log(`   - Buscando en Loan (V1): ${loan ? 'Encontrado' : 'No encontrado'}`);
+
+    if (!loan) {
+      loan = await LoanV2.findById(req.params.id).session(session);
+      if (loan) {
+        modelType = 'V2';
+        console.log(`   - Buscando en LoanV2 (V2): Encontrado`);
+      } else {
+        console.log(`   - Buscando en LoanV2 (V2): No encontrado`);
+      }
+    }
+
+    if (!loan) {
+      loan = await LoanV3.findById(req.params.id).session(session);
+      if (loan) {
+        modelType = 'V3';
+        console.log(`   - Buscando en LoanV3 (V3): Encontrado`);
+      } else {
+        console.log(`   - Buscando en LoanV3 (V3): No encontrado`);
+      }
+    }
+
+    if (!loan) {
+      console.log(`❌ Préstamo ${req.params.id} no fue encontrado en NINGÚN modelo.`);
+      throw new Error(`Préstamo no encontrado (${req.params.id})`);
+    }
+
+    console.log(`🗑️ Procediendo a eliminar préstamo ID: ${loan._id} (Modelo: ${modelType})`);
 
     // 1. Revertir Caja (Devolver desembolso)
-    let wallet = await Wallet.findOne({ isDefault: true, businessId: req.user.businessId }).session(session);
-    if (!wallet) wallet = await Wallet.findOne({ businessId: req.user.businessId }).session(session);
+    // In V2/V3 we use the specific funding wallet
+    let wallet;
+    if (loan.fundingWalletId) {
+      wallet = await Wallet.findById(loan.fundingWalletId).session(session);
+    }
+
+    // Fallback to default wallet if V1 or fundingWalletId not found
+    if (!wallet) {
+      wallet = await Wallet.findOne({ isDefault: true, businessId: req.user.businessId }).session(session);
+    }
+    if (!wallet) {
+      wallet = await Wallet.findOne({ businessId: req.user.businessId }).session(session);
+    }
 
     if (wallet) {
+      console.log(`🏦 Revirtiendo caja: ${wallet.name} (${wallet.currency})`);
       wallet.balance += loan.amount;
       const totalPaid = loan.schedule.reduce((acc, q) => acc + (q.paidAmount || 0), 0);
       wallet.balance -= totalPaid;
@@ -1097,22 +1376,64 @@ exports.deleteLoan = async (req, res) => {
     }
 
     // 2. Revertir Cliente (Quitar deuda)
-    await Client.findByIdAndUpdate(loan.client, {
-      $inc: { balance: -loan.balance }
+    let clientBalanceReversal = 0;
+    if (modelType === 'V1') {
+      clientBalanceReversal = loan.balance || 0;
+    } else {
+      // V2 and V3 use similar field names for pending debt
+      clientBalanceReversal = (loan.pendingCapital || loan.currentCapital || 0) +
+        (loan.pendingInterest || (loan.financialModel?.interestPending) || 0) +
+        (loan.pendingPenalty || 0);
+    }
+
+    console.log(`👤 Revirtiendo balance de cliente: ${clientBalanceReversal}`);
+    await Client.findByIdAndUpdate(loan.clientId || loan.client, {
+      $inc: { balance: -clientBalanceReversal }
     }).session(session);
 
-    // 3. Eliminar Transacciones asociadas
-    const loanIdStr = loan._id.toString().slice(-6);
-    await Transaction.deleteMany({
+    // 3. Eliminar Transacciones y Revertir Cajas de cada una
+    const transactions = await Transaction.find({
       businessId: req.user.businessId,
-      description: { $regex: loanIdStr }
+      $or: [
+        { loan: loan._id },
+        { loanV2: loan._id },
+        { loanV3: loan._id }
+      ]
     }).session(session);
 
-    // 4. Eliminar Préstamo
-    await Loan.findByIdAndDelete(req.params.id).session(session);
+    for (const tx of transactions) {
+      if (tx.wallet) {
+        const txWallet = await Wallet.findById(tx.wallet).session(session);
+        if (txWallet) {
+          // Revertir el impacto de la transacción en la caja
+          if (tx.type === 'in_payment' || tx.type === 'entry' || tx.type === 'dividend_distribution') {
+            txWallet.balance -= tx.amount;
+          } else if (tx.type === 'out_loan' || tx.type === 'exit') {
+            // El desembolso ya lo revertimos en el Paso 1
+            if (tx.type !== 'out_loan') txWallet.balance += tx.amount;
+          }
+          await txWallet.save({ session });
+        }
+      }
+    }
+
+    // Finalmente eliminar todas las transacciones vinculadas
+    await Transaction.deleteMany({
+      _id: { $in: transactions.map(t => t._id) }
+    }).session(session);
+
+    // 4. Eliminar el Préstamo definitivamente
+    if (modelType === 'V3') {
+      await LoanV3.findByIdAndDelete(req.params.id).session(session);
+    } else if (modelType === 'V2') {
+      await LoanV2.findByIdAndDelete(req.params.id).session(session);
+    } else {
+      await Loan.findByIdAndDelete(req.params.id).session(session);
+    }
 
     await session.commitTransaction();
-    res.json({ message: "Préstamo eliminado y transacciones revertidas." });
+    console.log(`✅ Préstamo ${loan._id} eliminado exitosamente con todas sus dependencias.`);
+    res.json({ message: "Préstamo eliminado exitosamente", id: loan._id });
 
   } catch (error) {
     await session.abortTransaction();
@@ -1192,22 +1513,36 @@ exports.updateLoan = async (req, res) => {
 // 2.1 OBTENER UN PRÉSTAMO
 exports.getLoan = async (req, res) => {
   try {
-    const loan = await Loan.findById(req.params.id).populate('client');
+    let loan = await Loan.findById(req.params.id).populate('client');
+    let modelType = 'V1';
+
+    if (!loan) {
+      loan = await LoanV2.findById(req.params.id).populate('clientId');
+      if (loan) modelType = 'V2';
+    }
+
+    if (!loan) {
+      loan = await LoanV3.findById(req.params.id).populate('clientId');
+      if (loan) modelType = 'V3';
+    }
+
     if (!loan) return res.status(404).json({ error: "Préstamo no encontrado" });
 
-    // Seguridad: Verificar businessId
+    // Normalizar fields de cliente según el modelo
+    const clientData = loan.client || loan.clientId;
+
     // Seguridad: Verificar businessId
     if (loan.businessId.toString() !== req.user.businessId.toString()) {
       return res.status(403).json({ error: "Acceso denegado" });
     }
 
-    // Calcular Mora
+    // Calcular Mora (esto podría variar entre modelos, pero por ahora usamos la lógica genérica)
     const today = new Date();
     const settings = await Settings.findOne({ businessId: req.user.businessId });
-    const overdueCount = loan.schedule.filter(q => q.status === 'pending' && new Date(q.dueDate) < today).length;
+    const overdueCount = loan.schedule?.filter(q => q.status === 'pending' && new Date(q.dueDate) < today).length || 0;
     const lateFee = calculateLateFee(loan, overdueCount, settings);
 
-    res.json({ ...loan.toObject(), lateFee: lateFee || 0 });
+    res.json({ ...loan.toObject(), lateFee: lateFee || 0, modelType });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -16,6 +16,7 @@ const settingsRoutes = require('./routes/settings');
 const userRoutes = require('./routes/users');
 const platformRoutes = require('./routes/platform'); // <--- ESTA FALTABA O ESTABA MAL
 const loansV2Routes = require('./routes/loansV2'); // Import LoanV2 routes
+const loansV3Routes = require('./routes/loansV3'); // Import LoanV3 routes
 
 const app = express();
 
@@ -71,6 +72,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/platform', platformRoutes); // <--- CONEXIÓN SAAS
 app.use('/api/products', productRoutes); // <--- CONEXIÓN SAAS
 app.use('/api/v2/loans', loansV2Routes); // V2 Loan System
+app.use('/api/v3/loans', loansV3Routes); // V3 Loan System (Multi-Currency)
 
 // Ruta base de prueba
 app.get('/', (req, res) => {

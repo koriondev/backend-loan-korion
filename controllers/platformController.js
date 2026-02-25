@@ -22,11 +22,18 @@ exports.getPlans = async (req, res) => {
 // 2. Crear Negocio
 exports.createBusiness = async (req, res) => {
   try {
-    const { businessName, planId, adminName, adminEmail, adminPassword } = req.body;
-    
+    const { businessName, planId, adminName, adminEmail, setupKey } = req.body;
+
+    console.log('[DEBUG] Receiving request to create business:', {
+      businessName,
+      adminEmail,
+      hasSetupKey: !!setupKey,
+      setupKeyLength: setupKey?.length
+    });
+
     if (!planId) return res.status(400).json({ error: "Plan requerido" });
     const selectedPlan = await Plan.findById(planId);
-    
+
     const newBusiness = new Business({
       name: businessName,
       slug: generateSlug(businessName),
@@ -37,17 +44,35 @@ exports.createBusiness = async (req, res) => {
     });
     await newBusiness.save();
 
-    const salt = await bcrypt.genSalt(10);
-    const hash = await bcrypt.hash(adminPassword, salt);
-    
+    // Encriptar password solo si viene, si no status es pending_activation
+    let hashedPassword = null;
+    let initialStatus = 'active';
+
+    if (setupKey && typeof setupKey === 'string' && setupKey.trim().length > 0) {
+      console.log(`[DEBUG] Hashing setupKey of length ${setupKey.length}`);
+      const salt = await bcrypt.genSalt(10);
+      hashedPassword = await bcrypt.hash(setupKey, salt);
+    } else {
+      console.log(`[DEBUG] No valid setupKey provided. Setting status to pending_activation. Type: ${typeof setupKey}`);
+      initialStatus = 'pending_activation';
+    }
+
     const adminUser = new User({
-      name: adminName, email: adminEmail, password: hash, role: 'admin', businessId: newBusiness._id
+      name: adminName,
+      email: adminEmail,
+      password: hashedPassword || null,
+      role: 'admin',
+      businessId: newBusiness._id,
+      status: initialStatus,
+      isActive: initialStatus === 'active'
     });
+
+    console.log(`[TI] Creating admin ${adminEmail}: status=${initialStatus}, hasPassword=${!!hashedPassword}`);
     await adminUser.save();
 
-    res.status(201).json({ message: "Creado" });
+    res.status(201).json({ message: "Creado", businessId: newBusiness._id });
   } catch (error) {
-    if(error.code === 11000) return res.status(400).json({ error: "Nombre o email duplicado" });
+    if (error.code === 11000) return res.status(400).json({ error: "Nombre o email duplicado" });
     res.status(500).json({ error: error.message });
   }
 };
@@ -99,11 +124,11 @@ exports.getBusinessDetail = async (req, res) => {
     if (!business) return res.status(404).json({ error: "No encontrado" });
 
     const users = await User.find({ businessId: id }).select('-password');
-    
+
     // Métricas básicas
     const clientCount = await Client.countDocuments({ businessId: id });
     const loanCount = await Loan.countDocuments({ businessId: id });
-    
+
     // Storage fake calculation
     const storageMB = ((clientCount * 2 + loanCount * 4) / 1024).toFixed(2);
 

@@ -33,8 +33,22 @@ const SettingsSchema = new mongoose.Schema({
     schedule: { type: [String], default: ["08:00", "12:00", "17:00"] } // Horarios de resumen
   },
 
+  // Global Revenue Share Defaults
+  defaultRevenueShare: {
+    investor: { type: Number, default: 45 },
+    manager: { type: Number, default: 35 },
+    platform: { type: Number, default: 20 }
+  },
+
   // Módulos Activos
   enabledModules: { type: [String], default: [] }, // Lista de IDs de módulos habilitados
+
+  // Configuración AI
+  aiConfig: {
+    provider: { type: String, enum: ['openai', 'gemini'], default: 'openai' },
+    apiKey: { type: String, default: '' },
+    enabled: { type: Boolean, default: false }
+  },
 
   updatedAt: { type: Date, default: Date.now }
 });

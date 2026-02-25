@@ -4,7 +4,7 @@ const NotificationSchema = new mongoose.Schema({
     businessId: { type: mongoose.Schema.Types.ObjectId, ref: 'Business', required: true },
     type: {
         type: String,
-        enum: ['payment', 'loan_approved', 'payment_due', 'overdue', 'info'],
+        enum: ['payment', 'loan_approved', 'payment_due', 'overdue', 'info', 'approval_request'],
         required: true
     },
     message: { type: String, required: true },

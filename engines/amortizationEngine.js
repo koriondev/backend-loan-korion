@@ -25,11 +25,12 @@ const roundToNearestFive = (num) => Math.round(num / 5) * 5;
 const getPeriodicRate = (monthlyRate, frequency) => {
     const rateDecimal = Number(monthlyRate) / 100;
     let divisor = 1;
+    const freq = (frequency || '').toLowerCase();
 
-    if (frequency === 'daily') divisor = 30;
-    if (frequency === 'weekly') divisor = 4;
-    if (frequency === 'biweekly') divisor = 2;
-    if (frequency === 'monthly') divisor = 1;
+    if (freq === 'daily') divisor = 30;
+    if (freq === 'weekly') divisor = 4;
+    if (freq === 'biweekly' || freq === '15_30' || freq === '1_16') divisor = 2;
+    if (freq === 'monthly') divisor = 1;
 
     return rateDecimal / divisor;
 };
@@ -141,9 +142,9 @@ const generateReditoSchedule = (params) => {
     }));
 
     const summary = {
-        interestTotal: 0, // Interest is variable in Redito
+        interestTotal: interestAmount, // Interest of first installment for Redito
         capitalTotal: amount,
-        totalToPay: amount, // For Redito, initial total debt is just capital
+        totalToPay: amount + interestAmount, // Initial total debt including first interest
         installmentCount: schedule.length
     };
 

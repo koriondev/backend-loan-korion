@@ -7,6 +7,7 @@ const Settings = require('../models/Settings');
 const { generateSchedule } = require('../engines/amortizationEngine');
 const { calculatePenalty } = require('../engines/penaltyEngine');
 const { distributePayment, applyPaymentToLoan, validatePaymentAmount } = require('../engines/paymentEngine');
+const financeController = require('./financeController');
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -14,6 +15,8 @@ const { distributePayment, applyPaymentToLoan, validatePaymentAmount } = require
  * ═══════════════════════════════════════════════════════════════════════════
  */
 exports.createLoan = async (req, res) => {
+    return res.status(400).json({ error: "La creación de préstamos en la versión V2 ha sido deshabilitada. Por favor, actualiza a la versión V3." });
+
     const session = await mongoose.startSession();
     session.startTransaction();
 
@@ -202,6 +205,11 @@ exports.createLoan = async (req, res) => {
 
         await session.commitTransaction();
 
+        // Sincronizar balance dinámicamente
+        if (newLoan.fundingWalletId) {
+            await financeController.recalculateWalletBalance(newLoan.fundingWalletId);
+        }
+
         res.status(201).json({
             success: true,
             loan: newLoan,
@@ -374,17 +382,20 @@ exports.registerPayment = async (req, res) => {
                 let userWallet = await Wallet.findOne({
                     ownerId: userId,
                     type: 'earnings',
-                    businessId: loan.businessId
+                    businessId: loan.businessId,
+                    currency: loan.currency || 'DOP'
                 }).session(session);
 
                 // If not exists, create one
                 if (!userWallet) {
+                    const currSuffix = loan.currency && loan.currency !== 'DOP' ? ` ${loan.currency}` : '';
                     userWallet = new Wallet({
-                        name: `Nómina/Ganancias`,
+                        name: `Nómina/Ganancias${currSuffix}`,
                         ownerId: userId,
                         type: 'earnings',
                         businessId: loan.businessId,
-                        balance: 0
+                        balance: 0,
+                        currency: loan.currency || 'DOP'
                     });
                     await userWallet.save({ session });
                 }
@@ -412,9 +423,9 @@ exports.registerPayment = async (req, res) => {
             await creditToUserWallet(managerId, managerShare, 'manager');
 
             // Platform/Expense Wallet (Non-user specific usually, or Admin)
-            // We search for a type='expense' wallet or default
-            let platformWallet = await Wallet.findOne({ type: 'expense', businessId: loan.businessId }).session(session);
-            if (!platformWallet) platformWallet = await Wallet.findOne({ isDefault: true, businessId: loan.businessId }).session(session); // Fallback
+            // 2.3 PLATFORM SHARE (Wallet - Expense format)
+            let platformWallet = await Wallet.findOne({ type: 'expense', businessId: loan.businessId, currency: loan.currency || 'DOP' }).session(session);
+            if (!platformWallet) platformWallet = await Wallet.findOne({ isDefault: true, businessId: loan.businessId, currency: loan.currency || 'DOP' }).session(session); // Fallback
 
             if (platformWallet && platformShare > 0) {
                 platformWallet.balance += platformShare;

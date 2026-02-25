@@ -235,8 +235,41 @@ const LoanV2Schema = new mongoose.Schema({
 
     status: {
         type: String,
-        enum: ['active', 'paid', 'past_due', 'bad_debt'],
+        enum: ['active', 'paid', 'past_due', 'bad_debt', 'pending_approval', 'rejected'],
         default: 'active'
+    },
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // FUNDING & ATTRIBUTION
+    // ─────────────────────────────────────────────────────────────────────────
+    fundingWalletId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Wallet',
+        required: true
+    },
+    investorId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
+    },
+    managerId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
+    },
+    approvalStatus: {
+        type: String,
+        enum: ['approved', 'pending_approval', 'rejected'],
+        default: 'approved'
+    },
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // REVENUE SHARE CONFIG (SNAPSHOT)
+    // ─────────────────────────────────────────────────────────────────────────
+    revenueShare: {
+        investorPercentage: { type: Number, required: true },
+        managerPercentage: { type: Number, required: true },
+        platformPercentage: { type: Number, required: true }
     },
 
     // ─────────────────────────────────────────────────────────────────────────

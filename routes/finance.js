@@ -15,7 +15,8 @@ router.get('/wallets', financeController.getWallets);
 router.post('/wallets', financeController.createWallet);
 router.delete('/wallets/:id', financeController.deleteWallet); // <--- NUEVA
 router.get('/wallets/:id', financeController.getWalletDetails); // <--- NUEVA
-router.put('/wallets/:id/default', financeController.setWalletDefault); // <--- NUEVA
+router.put('/wallets/:id/default', financeController.setWalletDefault);
+router.put('/wallets/:id/balance', financeController.adjustWalletBalance); // <--- NUEVA
 
 // Eliminar Transacción (Solo movimientos sin cliente)
 router.delete('/transactions/:id', financeController.deleteTransaction);

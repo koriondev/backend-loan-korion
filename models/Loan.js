@@ -29,7 +29,18 @@ const LoanSchema = new mongoose.Schema({
     gracePeriod: { type: Number }
   },
 
-  status: { type: String, enum: ['active', 'paid', 'bad_debt', 'past_due'], default: 'active' },
+  status: { type: String, enum: ['active', 'paid', 'bad_debt', 'past_due', 'pending_approval', 'rejected'], default: 'active' },
+  approvalStatus: { type: String, enum: ['approved', 'pending'], default: 'approved' },
+
+  // Fondeo y Reparto
+  fundingWallet: { type: mongoose.Schema.Types.ObjectId, ref: 'Wallet' },
+  investorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  revenueShare: {
+    investorPercentage: { type: Number, default: 45 },
+    managerPercentage: { type: Number, default: 35 },
+    platformPercentage: { type: Number, default: 20 }
+  },
 
   schedule: [{
     number: Number,
@@ -45,6 +56,18 @@ const LoanSchema = new mongoose.Schema({
   }],
 
   createdAt: { type: Date, default: Date.now }
+});
+
+LoanSchema.post('save', async function (doc) {
+  try {
+    const Client = mongoose.model('Client');
+    const client = await Client.findById(doc.client);
+    if (client) {
+      await client.updateRiskLevel();
+    }
+  } catch (err) {
+    console.error('Error updating client risk level:', err);
+  }
 });
 
 module.exports = mongoose.model('Loan', LoanSchema);
