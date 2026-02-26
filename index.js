@@ -8,6 +8,8 @@ const path = require('path');
 const productRoutes = require('./routes/products');
 const authRoutes = require('./routes/auth');
 const clientRoutes = require('./routes/clients');
+const activityRoutes = require('./routes/activity');
+// const dashboardRoutes = require('./routes/dashboard'); // Si existe
 const loanRoutes = require('./routes/loans');
 const financeRoutes = require('./routes/finance');
 const reportRoutes = require('./routes/reports');
@@ -63,6 +65,8 @@ console.log('---------------------------------------');
 // --- 2. CONECTAR RUTAS (ENDPOINTS) ---
 app.use('/api/auth', authRoutes);
 app.use('/api/clients', clientRoutes);
+app.use('/api/activity', activityRoutes);
+// app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/loans', loanRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/reports', reportRoutes);

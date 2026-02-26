@@ -103,7 +103,7 @@ exports.getAllBusinesses = async (req, res) => {
 exports.updateBusiness = async (req, res) => {
   try {
     const { id } = req.params;
-    const { planId, status, demoExpirationDate, modulePermissions, limits } = req.body;
+    const { planId, status, demoExpirationDate, licenseExpiresAt, modulePermissions, limits } = req.body;
     const business = await Business.findById(req.params.id);
     if (!business) return res.status(404).json({ error: 'Negocio no encontrado' });
 
@@ -118,6 +118,7 @@ exports.updateBusiness = async (req, res) => {
     }
     if (status) business.status = status;
     if (demoExpirationDate !== undefined) business.demoExpirationDate = demoExpirationDate;
+    if (licenseExpiresAt !== undefined) business.licenseExpiresAt = licenseExpiresAt;
     if (modulePermissions) business.modulePermissions = modulePermissions;
     if (limits) business.limits = { ...business.limits, ...limits };
 

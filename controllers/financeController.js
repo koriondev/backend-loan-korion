@@ -145,8 +145,12 @@ function getDefaultDescription(type) {
 // 1. Obtener todas las carteras (DE MI NEGOCIO)
 exports.getWallets = async (req, res) => {
   try {
-    // Usamos el filtro automático del middleware o forzamos el ID
-    const filter = req.businessFilter || { businessId: req.user.businessId };
+    const filter = { ...(req.businessFilter || { businessId: req.user.businessId }) };
+
+    // Si no es admin/ti, solo ver sus propias carteras
+    if (req.user.role !== 'admin' && req.user.role !== 'ti') {
+      filter.ownerId = req.user.id || req.user._id;
+    }
 
     const wallets = await Wallet.find(filter);
     res.json(wallets);
@@ -208,20 +212,27 @@ exports.getHistory = async (req, res) => {
   try {
     // 1. Validación de Seguridad
     if (!req.user || !req.user.businessId) {
-      // Si no sabemos de qué empresa es, devolvemos array vacío en vez de explotar
       return res.json([]);
     }
 
     // 2. Filtro Automático
-    // Si es TI, req.businessFilter vendrá vacío (ver todo)
-    // Si es Admin/Cobrador, vendrá { businessId: '...' }
-    const filter = req.businessFilter || { businessId: req.user.businessId };
+    const queryFilter = { ...(req.businessFilter || { businessId: req.user.businessId }) };
 
-    const history = await Transaction.find(filter)
-      .populate('client', 'name') // Traer nombre del cliente
-      .populate('wallet', 'name') // Traer nombre de la cartera
-      .sort({ date: -1 }) // Más reciente primero
-      .limit(200); // Límite de seguridad
+    // 3. Filtro por Propietario (Si no es Admin/TI)
+    if (req.user.role !== 'admin' && req.user.role !== 'ti') {
+      const myWallets = await Wallet.find({
+        businessId: req.user.businessId,
+        ownerId: req.user.id || req.user._id
+      }).select('_id');
+      const walletIds = myWallets.map(w => w._id);
+      queryFilter.wallet = { $in: walletIds };
+    }
+
+    const history = await Transaction.find(queryFilter)
+      .populate('client', 'name')
+      .populate('wallet', 'name')
+      .sort({ date: -1 })
+      .limit(200);
 
     res.json(history);
 

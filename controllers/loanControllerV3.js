@@ -4,9 +4,9 @@ const PaymentV2 = require('../models/PaymentV2');
 const Client = require('../models/Client');
 const Wallet = require('../models/Wallet');
 const Settings = require('../models/Settings');
-const { generateSchedule } = require('../engines/amortizationEngine');
-const { calculatePenalty } = require('../engines/penaltyEngine');
-const { distributePayment, applyPaymentToLoan, validatePaymentAmount } = require('../engines/paymentEngine');
+const { generateScheduleV3 } = require('../engines/amortizationEngineV3');
+const { calculatePenaltyV3 } = require('../engines/penaltyEngineV3');
+const { distributePaymentV3, applyPaymentToLoanV3, validatePaymentAmountV3 } = require('../engines/paymentEngineV3');
 const financeController = require('./financeController');
 
 /**
@@ -44,8 +44,8 @@ exports.createLoan = async (req, res) => {
         // Get settings for working days
         const settings = await Settings.findOne({ businessId: req.user.businessId }).session(session);
 
-        // Generate schedule
-        const { schedule, summary } = generateSchedule({
+        // Generate schedule V3
+        const { schedule, summary } = generateScheduleV3({
             amount: parsedAmount,
             interestRateMonthly: parsedRate,
             duration: parsedDuration,
@@ -54,7 +54,7 @@ exports.createLoan = async (req, res) => {
             lendingType,
             startDate: startDate || new Date(),
             firstPaymentDate: firstPaymentDate || new Date()
-        }, settings);
+        });
 
         // Extract wallet currency first
         const fundingWallet = await Wallet.findById(req.body.fundingWalletId).session(session);
@@ -247,10 +247,10 @@ exports.getLoans = async (req, res) => {
 
         const settings = await Settings.findOne({ businessId: req.user.businessId });
 
-        // Enrich with calculated penalty
+        // Enrich with calculated penalty V3
         const enrichedLoans = loans.map(loan => {
-            const penaltyData = calculatePenalty(loan, settings);
-            const pendingPenalty = Math.max(0, penaltyData.totalPenalty - (loan.penaltyConfig.paidPenalty || 0));
+            const penaltyData = calculatePenaltyV3(loan, settings);
+            const pendingPenalty = Math.max(0, penaltyData.totalPenalty - (parseFloat(loan.penaltyConfig.paidPenalty?.toString()) || 0));
 
             return {
                 ...loan.toObject(),
@@ -282,8 +282,8 @@ exports.getLoanById = async (req, res) => {
         }
 
         const settings = await Settings.findOne({ businessId: loan.businessId });
-        const penaltyData = calculatePenalty(loan, settings);
-        const pendingPenalty = Math.max(0, penaltyData.totalPenalty - (loan.penaltyConfig.paidPenalty || 0));
+        const penaltyData = calculatePenaltyV3(loan, settings);
+        const pendingPenalty = Math.max(0, penaltyData.totalPenalty - (parseFloat(loan.penaltyConfig.paidPenalty?.toString()) || 0));
 
         res.json({
             ...loan.toObject(),
@@ -319,19 +319,19 @@ exports.registerPayment = async (req, res) => {
         const settings = await Settings.findOne({ businessId: loan.businessId }).session(session);
 
         // Calculate current penalty
-        const penaltyData = calculatePenalty(loan, settings);
+        const penaltyData = calculatePenaltyV3(loan, settings);
 
         // Validate payment
-        const validation = validatePaymentAmount(loan, amount, penaltyData);
+        const validation = validatePaymentAmountV3(loan, amount, penaltyData);
         if (!validation.valid) {
             throw new Error(validation.message);
         }
 
         // Distribute payment
-        const distribution = distributePayment(loan, amount, penaltyData);
+        const distribution = distributePaymentV3(loan, amount, penaltyData);
 
         // Apply distribution to loan
-        applyPaymentToLoan(loan, distribution);
+        applyPaymentToLoanV3(loan, distribution);
 
         loan.markModified('schedule');
         loan.markModified('financialModel');
@@ -428,6 +428,7 @@ exports.registerPayment = async (req, res) => {
                     description: `Ganancia Préstamo (Interés+Mora)`,
                     loanV3: loan._id,
                     wallet: userWallet._id,
+                    client: loan.clientId, // <--- ADDED CLIENT
                     metadata: { role: roleLabel, percentage: revenueShare[`${roleLabel}Percentage`] },
                     date: new Date()
                 }).save({ session });
@@ -455,6 +456,7 @@ exports.registerPayment = async (req, res) => {
                     description: 'Comisión Plataforma / Fondo Gastos',
                     loanV3: loan._id,
                     wallet: platformWallet._id,
+                    client: loan.clientId, // <--- ADDED CLIENT
                     date: new Date()
                 }).save({ session });
             }
@@ -568,8 +570,8 @@ exports.previewLoan = async (req, res) => {
 
         const effectiveRate = interestRateMonthly || interestRate;
 
-        // Generate schedule
-        const { schedule, summary } = generateSchedule({
+        // Generate schedule V3
+        const { schedule, summary } = generateScheduleV3({
             amount: parseFloat(amount),
             interestRateMonthly: parseFloat(effectiveRate),
             duration: parseInt(duration),
@@ -578,7 +580,7 @@ exports.previewLoan = async (req, res) => {
             lendingType,
             startDate: startDate || new Date(),
             firstPaymentDate: firstPaymentDate || new Date()
-        }, settings);
+        });
 
         console.log("SCHEDULE GENERATED, FIRST ITEM:", schedule[0]);
 

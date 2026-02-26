@@ -101,54 +101,54 @@ const ScheduleItemSchema = new mongoose.Schema({
         type: Date,
         required: true
     },
+    status: {
+        type: String,
+        enum: ['pending', 'partial', 'paid', 'atrasado'],
+        default: 'pending'
+    },
     amount: {
-        type: Number,
+        type: mongoose.Schema.Types.Decimal128,
         required: true
     },
-    capital: {
-        type: Number,
+    principalAmount: {
+        type: mongoose.Schema.Types.Decimal128,
         required: true
     },
-    interest: {
-        type: Number,
+    interestAmount: {
+        type: mongoose.Schema.Types.Decimal128,
         required: true
+    },
+    balance: {
+        type: mongoose.Schema.Types.Decimal128,
+        required: true
+    },
+    daysOfGrace: {
+        type: Number,
+        default: 0
     },
     penaltyGenerated: {
-        type: Number,
+        type: mongoose.Schema.Types.Decimal128,
         default: 0
     },
     capitalPaid: {
-        type: Number,
+        type: mongoose.Schema.Types.Decimal128,
         default: 0
     },
     interestPaid: {
-        type: Number,
+        type: mongoose.Schema.Types.Decimal128,
         default: 0
     },
     penaltyPaid: {
-        type: Number,
+        type: mongoose.Schema.Types.Decimal128,
         default: 0
     },
     paidAmount: {
-        type: Number,
+        type: mongoose.Schema.Types.Decimal128,
         default: 0
     },
     paidDate: {
         type: Date,
         default: null
-    },
-    status: {
-        type: String,
-        enum: ['pending', 'partial', 'paid'],
-        default: 'pending'
-    },
-    balance_start: {
-        type: Number,
-        default: 0
-    },
-    balance_after: {
-        type: Number,
-        default: 0
     }
 }, { _id: false });
 
