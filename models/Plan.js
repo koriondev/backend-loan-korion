@@ -6,14 +6,18 @@ const PlanSchema = new mongoose.Schema({
   price: { type: Number, required: true },
   currency: { type: String, default: 'USD' },
   description: String,
-  
+
   // Límites Duros (El sistema bloqueará si se pasan)
   limits: {
+    maxClients: { type: Number, default: 10 },   // Límite de clientes
     maxLoans: { type: Number, default: 5 },      // Préstamos activos
     maxUsers: { type: Number, default: 1 },      // Usuarios (Admin + Cobradores)
     maxRoutes: { type: Number, default: 0 },     // Rutas creadas
     maxWallets: { type: Number, default: 1 }     // Cajas
   },
+
+  // Lista de módulos permitidos para este plan
+  modulePermissions: [String],
 
   // Funcionalidades (Flags para activar/desactivar módulos)
   features: {

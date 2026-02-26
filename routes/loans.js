@@ -4,13 +4,19 @@ const loanController = require('../controllers/loanController');
 
 // --- IMPORTAR MIDDLEWARES DE SEGURIDAD ---
 const authMiddleware = require('../middleware/authMiddleware');
-const limitMiddleware = require('../middleware/limitMiddleware');
+const subscriptionMiddleware = require('../middleware/subscriptionMiddleware');
+// Eliminamos limitMiddleware antiguo ya que usaremos el nuevo subscriptionMiddleware
 
 // 1. Obtener Atrasos (Protegido)
 router.get('/arrears', authMiddleware, loanController.getArrears);
 
 // 2. Crear Préstamo (Protegido + Verificación de Límite de Plan)
-router.post('/', authMiddleware, limitMiddleware.checkLoanLimit, loanController.createLoan);
+router.post('/',
+    authMiddleware,
+    subscriptionMiddleware.checkSubscription,
+    subscriptionMiddleware.checkLoanLimit,
+    loanController.createLoan
+);
 
 // 2.1 Previsualizar Préstamo (Protegido)
 router.post('/preview', authMiddleware, loanController.previewLoan);

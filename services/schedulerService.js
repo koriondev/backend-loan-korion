@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const Settings = require('../models/Settings');
 const notificationController = require('../controllers/notificationController');
+const whatsappService = require('./whatsappService');
 
 const initScheduler = () => {
     console.log('⏰ Scheduler Service Initialized');
@@ -26,6 +27,15 @@ const initScheduler = () => {
             }
         } catch (error) {
             console.error('❌ Scheduler Error:', error);
+        }
+    });
+
+    // Run daily at 09:00 AM for WhatsApp trial sequences
+    cron.schedule('0 9 * * *', async () => {
+        try {
+            await whatsappService.processTrialSequence();
+        } catch (error) {
+            console.error('❌ WhatsApp Scheduler Error:', error);
         }
     });
 };

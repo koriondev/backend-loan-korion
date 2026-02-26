@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const loanControllerV2 = require('../controllers/loanControllerV2');
 const authMiddleware = require('../middleware/authMiddleware');
+const subscriptionMiddleware = require('../middleware/subscriptionMiddleware');
 
 // All routes require authentication
 router.use(authMiddleware);
@@ -22,7 +23,11 @@ router.post('/preview', loanControllerV2.previewLoan);
  * @desc    Create a new loan
  * @access  Private
  */
-router.post('/', loanControllerV2.createLoan);
+router.post('/',
+    subscriptionMiddleware.checkSubscription,
+    subscriptionMiddleware.checkLoanLimit,
+    loanControllerV2.createLoan
+);
 
 /**
  * @route   GET /api/v2/loans

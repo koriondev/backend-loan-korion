@@ -2,8 +2,8 @@ const mongoose = require('mongoose');
 
 const BusinessSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  slug: { type: String, unique: true, lowercase: true }, 
-  
+  slug: { type: String, unique: true, lowercase: true },
+
   // Datos de Contacto
   ownerName: String,
   ownerEmail: { type: String, required: true },
@@ -11,14 +11,20 @@ const BusinessSchema = new mongoose.Schema({
 
   // --- ESTA ES LA LÍNEA QUE TE FALTA ---
   // Conecta este negocio con la colección de 'Plan'
-  planId: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan' }, 
+  planId: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan' },
   // -------------------------------------
 
-  status: { 
-    type: String, 
-    enum: ['active', 'suspended', 'expired'], 
-    default: 'active' 
+  status: {
+    type: String,
+    enum: ['active', 'suspended', 'expired'],
+    default: 'active'
   },
+
+  // --- NUEVOS CAMPOS SUBSCRIPCIÓN ---
+  isDemo: { type: Boolean, default: false },
+  demoExpirationDate: Date,
+  modulePermissions: [String], // Copia local de los módulos permitidos
+  // ----------------------------------
 
   // Guardamos una copia de los límites aquí para acceso rápido
   limits: {
@@ -26,7 +32,7 @@ const BusinessSchema = new mongoose.Schema({
     maxLoans: { type: Number, default: 5 },
     maxUsers: { type: Number, default: 1 }
   },
-  
+
   licenseExpiresAt: Date,
   createdAt: { type: Date, default: Date.now }
 });

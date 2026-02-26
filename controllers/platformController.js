@@ -34,12 +34,18 @@ exports.createBusiness = async (req, res) => {
     if (!planId) return res.status(400).json({ error: "Plan requerido" });
     const selectedPlan = await Plan.findById(planId);
 
+    const isDemo = selectedPlan.code === 'demo';
+    const demoExpirationDate = isDemo ? new Date(new Date().setDate(new Date().getDate() + 5)) : null;
+
     const newBusiness = new Business({
       name: businessName,
       slug: generateSlug(businessName),
       ownerEmail: adminEmail,
       planId: selectedPlan._id,
       limits: selectedPlan.limits,
+      modulePermissions: selectedPlan.modulePermissions || [], // Copiar permisos del plan
+      isDemo,
+      demoExpirationDate,
       licenseExpiresAt: new Date(new Date().setFullYear(new Date().getFullYear() + 1))
     });
     await newBusiness.save();
@@ -97,19 +103,23 @@ exports.getAllBusinesses = async (req, res) => {
 exports.updateBusiness = async (req, res) => {
   try {
     const { id } = req.params;
-    const { planId, status } = req.body;
+    const { planId, status, demoExpirationDate, modulePermissions, limits } = req.body;
+    const business = await Business.findById(req.params.id);
+    if (!business) return res.status(404).json({ error: 'Negocio no encontrado' });
 
-    const business = await Business.findById(id);
-    if (!business) return res.status(404).json({ error: "No encontrado" });
-
-    if (planId && planId !== business.planId.toString()) {
+    if (planId && planId !== (business.planId?.toString() || '')) {
       const newPlan = await Plan.findById(planId);
       if (newPlan) {
         business.planId = newPlan._id;
         business.limits = newPlan.limits;
+        // Si cambiamos de plan, reseteamos permisos modulares a los del plan por defecto
+        business.modulePermissions = newPlan.modulePermissions || [];
       }
     }
     if (status) business.status = status;
+    if (demoExpirationDate !== undefined) business.demoExpirationDate = demoExpirationDate;
+    if (modulePermissions) business.modulePermissions = modulePermissions;
+    if (limits) business.limits = { ...business.limits, ...limits };
 
     await business.save();
     res.json(business);

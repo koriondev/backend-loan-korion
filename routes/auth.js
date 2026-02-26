@@ -158,9 +158,15 @@ router.post('/login', async (req, res) => {
       { expiresIn: '1d' }
     );
 
-    // Obtener configuración de la empresa
+    // Obtener configuración y datos del negocio
+    const Business = require('../models/Business');
     const Settings = require('../models/Settings');
-    const settings = await Settings.findOne({ businessId: user.businessId });
+
+    const [business, settings] = await Promise.all([
+      Business.findById(user.businessId),
+      Settings.findOne({ businessId: user.businessId })
+    ]);
+
     const enabledModules = settings ? settings.enabledModules : [];
 
     res.json({
@@ -171,7 +177,11 @@ router.post('/login', async (req, res) => {
         email: user.email,
         role: user.role,
         businessId: user.businessId,
-        enabledModules
+        enabledModules,
+        // Datos de suscripción
+        isDemo: business?.isDemo || false,
+        demoExpirationDate: business?.demoExpirationDate,
+        modulePermissions: business?.modulePermissions || []
       }
     });
 
@@ -185,15 +195,23 @@ router.get('/me', authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
 
-    // Fetch settings to include enabledModules
+    const Business = require('../models/Business');
     const Settings = require('../models/Settings');
-    const settings = await Settings.findOne({ businessId: user.businessId });
+
+    const [business, settings] = await Promise.all([
+      Business.findById(user.businessId),
+      Settings.findOne({ businessId: user.businessId })
+    ]);
+
     const enabledModules = settings ? settings.enabledModules : [];
 
-    // Return user object + enabledModules
+    // Return user object + enabledModules + Subscription data
     res.json({
       ...user.toObject(),
-      enabledModules
+      enabledModules,
+      isDemo: business?.isDemo || false,
+      demoExpirationDate: business?.demoExpirationDate,
+      modulePermissions: business?.modulePermissions || []
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

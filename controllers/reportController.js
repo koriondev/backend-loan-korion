@@ -97,8 +97,10 @@ exports.getGeneralStats = async (req, res) => {
       });
     }
 
-    // --- 4. CAPITAL DISPONIBLE & MORA ---
-    const wallets = await Wallet.find({ businessId: businessIdStr });
+    const [wallets, clientsCount] = await Promise.all([
+      Wallet.find({ businessId: businessIdStr }),
+      require('../models/Client').countDocuments({ businessId: businessIdStr })
+    ]);
     const defaultWallet = wallets.find(w => w.isDefault) || wallets[0];
     const totalCapital = defaultWallet ? defaultWallet.balance : 0;
 
@@ -162,8 +164,9 @@ exports.getGeneralStats = async (req, res) => {
       lentMonth,
       lateLoans: lateCount,
       availableCapital: totalCapital,
-      monthlyGain, // <--- Ganancia Mensual (Interés del mes)
-      chartData: formattedChartData // <--- ESTO ES LO NUEVO PARA EL GRÁFICO
+      monthlyGain,
+      clientsCount, // <--- Nuevo campo para onboarding
+      chartData: formattedChartData
     });
 
   } catch (error) {
