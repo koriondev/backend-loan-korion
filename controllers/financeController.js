@@ -407,3 +407,57 @@ exports.deleteTransaction = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 }; exports.recalculateWalletBalance = recalculateWalletBalance;
+
+/**
+ * Recalcular todos los balances de carteras de la empresa.
+ * Fórmula: balance = initialCapital + sum(ingresos operativos) - sum(egresos operativos)
+ * Ignora las categorías de apertura de capital para no duplicar con initialCapital.
+ */
+exports.recalculateAllWallets = async (req, res) => {
+  try {
+    const businessId = req.user.businessId;
+    const wallets = await Wallet.find({ businessId });
+    const results = [];
+
+    for (const wallet of wallets) {
+      const before = wallet.balance;
+      const transactions = await Transaction.find({ wallet: wallet._id });
+
+      const ignoreCategories = [
+        'Capital de Apertura', 'Inyección de Capital', 'Ajuste de Saldo',
+        'Capital Inicial', 'Apertura de Capital', 'Apertura de Cartera'
+      ];
+
+      const operationalFlux = transactions.reduce((acc, tx) => {
+        if (ignoreCategories.includes(tx.category)) return acc;
+        const amount = Number(tx.amount) || 0;
+        if (['in_payment', 'entry'].includes(tx.type)) return acc + amount;
+        if (['out_loan', 'exit', 'dividend_distribution'].includes(tx.type)) return acc - amount;
+        return acc;
+      }, 0);
+
+      const newBalance = Math.round(((Number(wallet.initialCapital) || 0) + operationalFlux) * 100) / 100;
+      wallet.balance = newBalance;
+      await wallet.save();
+
+      results.push({
+        walletId: wallet._id,
+        name: wallet.name,
+        currency: wallet.currency,
+        before: before,
+        after: newBalance,
+        diff: Math.round((newBalance - before) * 100) / 100,
+        transactionsCount: transactions.length
+      });
+    }
+
+    res.json({
+      message: `${wallets.length} carteras recalculadas exitosamente`,
+      results
+    });
+  } catch (error) {
+    console.error('Error recalculando carteras:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+

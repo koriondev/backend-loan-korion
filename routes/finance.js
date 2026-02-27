@@ -13,10 +13,13 @@ router.post('/transactions', financeController.createTransaction);
 router.get('/transactions', financeController.getHistory);
 router.get('/wallets', financeController.getWallets);
 router.post('/wallets', financeController.createWallet);
-router.delete('/wallets/:id', financeController.deleteWallet); // <--- NUEVA
-router.get('/wallets/:id', financeController.getWalletDetails); // <--- NUEVA
+router.delete('/wallets/:id', financeController.deleteWallet);
+router.get('/wallets/:id', financeController.getWalletDetails);
 router.put('/wallets/:id/default', financeController.setWalletDefault);
-router.put('/wallets/:id/balance', financeController.adjustWalletBalance); // <--- NUEVA
+router.put('/wallets/:id/balance', financeController.adjustWalletBalance);
+
+// Recalcular todos los balances de carteras basado en movimientos reales
+router.post('/wallets/recalculate-all', financeController.recalculateAllWallets);
 
 // Eliminar Transacción (Solo movimientos sin cliente)
 router.delete('/transactions/:id', financeController.deleteTransaction);
