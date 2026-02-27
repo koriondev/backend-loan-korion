@@ -29,21 +29,22 @@ router.get('/:id', authMiddleware, loanController.getLoan);
 
 // 4. Registrar Pago (Protegido)
 router.post('/pay', authMiddleware, loanController.registerPayment);
+router.post('/:id/apply-penalty', authMiddleware, loanController.applyPenalty);
 
-// 5. Simular Pago (Protegido) -> ¡AQUÍ FALTABA EL MIDDLEWARE!
+// 5. Simular Pago (Protegido)
 router.get('/:id/payment-details', authMiddleware, loanController.getPaymentDetails);
 
-// 6. Eliminar Préstamo
-router.delete('/:id', authMiddleware, loanController.deleteLoan);
-
-// 7. Editar Préstamo
-router.put('/:id', authMiddleware, loanController.updateLoan);
-
-// 8. Eliminar Pago/Transacción
+// 6. Eliminar Pago/Transacción (MOVILIZADO POR COLISION CON :id)
 router.delete('/payment/:transactionId', authMiddleware, loanController.deletePayment);
 
-// 9. Actualizar Monto de Pago
+// 7. Actualizar Monto de Pago (MOVILIZADO POR COLISION CON :id)
 router.put('/payment/:transactionId', authMiddleware, loanController.updatePaymentAmount);
+
+// 8. Eliminar Préstamo
+router.delete('/:id', authMiddleware, loanController.deleteLoan);
+
+// 9. Editar Préstamo
+router.put('/:id', authMiddleware, loanController.updateLoan);
 
 // 10. Actualizar Configuración de Mora
 router.put('/:loanId/penalty-config', authMiddleware, loanController.updatePenaltyConfig);

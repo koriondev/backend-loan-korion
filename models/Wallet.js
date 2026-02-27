@@ -13,8 +13,8 @@ const WalletSchema = new mongoose.Schema({
     default: 'DOP'
   },
 
-  // NEW: Owner of the wallet
-  ownerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  // NEW: Owner of the wallet (Puede ser null si es una wallet general de la empresa/plataforma)
+  ownerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
   // NEW: Wallet Type for segregation
   type: {

@@ -8,7 +8,7 @@ const { isWorkingDay } = require('./amortizationEngineV3'); // We'll export it f
 
 const getVal = (v) => (v && typeof v.toString === 'function' && v.constructor.name === 'Decimal128') ? parseFloat(v.toString()) : (parseFloat(v) || 0);
 
-exports.calculatePenaltyV3 = (loan, settings = null) => {
+exports.calculatePenaltyV3 = (loan, settings = null, referenceDate = null) => {
     if (!loan.penaltyConfig || !loan.penaltyConfig.type) {
         return { totalPenalty: 0, breakdown: [], periodsOverdue: 0 };
     }
@@ -17,25 +17,25 @@ exports.calculatePenaltyV3 = (loan, settings = null) => {
 
     switch (type) {
         case 'fixed':
-            return calculateFixedPenaltyV3(loan, settings);
+            return calculateFixedPenaltyV3(loan, settings, referenceDate);
         case 'percent':
-            return calculatePercentPenaltyV3(loan, settings);
+            return calculatePercentPenaltyV3(loan, settings, referenceDate);
         default:
             return { totalPenalty: 0, breakdown: [], periodsOverdue: 0 };
     }
 };
 
-const calculateFixedPenaltyV3 = (loan, settings) => {
+const calculateFixedPenaltyV3 = (loan, settings, referenceDate = null) => {
     const config = loan.penaltyConfig;
     const { value, gracePeriod, applyPerInstallment, periodMode, maxPenalty } = config;
 
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+    const refDay = referenceDate ? new Date(referenceDate) : new Date();
+    refDay.setHours(0, 0, 0, 0);
 
     const overdueInstallments = loan.schedule.filter(inst => {
         if (inst.status === 'paid') return false;
         const dueDate = new Date(inst.dueDate);
-        return dueDate < startOfToday;
+        return dueDate < refDay;
     });
 
     if (overdueInstallments.length === 0) {
@@ -47,7 +47,7 @@ const calculateFixedPenaltyV3 = (loan, settings) => {
 
     if (applyPerInstallment) {
         overdueInstallments.forEach(inst => {
-            const periodsOverdue = getOverduePeriods(inst.dueDate, periodMode, gracePeriod, settings);
+            const periodsOverdue = getOverduePeriods(inst.dueDate, periodMode, gracePeriod, settings, refDay);
             const penaltyForInst = value * periodsOverdue;
 
             breakdown.push({
@@ -60,7 +60,7 @@ const calculateFixedPenaltyV3 = (loan, settings) => {
         });
     } else {
         const oldestOverdue = overdueInstallments[0];
-        const periodsOverdue = getOverduePeriods(oldestOverdue.dueDate, periodMode, gracePeriod, settings);
+        const periodsOverdue = getOverduePeriods(oldestOverdue.dueDate, periodMode, gracePeriod, settings, refDay);
         totalPenalty = value * periodsOverdue;
 
         breakdown.push({
@@ -80,17 +80,17 @@ const calculateFixedPenaltyV3 = (loan, settings) => {
     };
 };
 
-const calculatePercentPenaltyV3 = (loan, settings) => {
+const calculatePercentPenaltyV3 = (loan, settings, referenceDate = null) => {
     const config = loan.penaltyConfig;
     const { value, gracePeriod, applyPerInstallment, applyOn, periodMode, maxPenalty } = config;
 
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+    const refDay = referenceDate ? new Date(referenceDate) : new Date();
+    refDay.setHours(0, 0, 0, 0);
 
     const overdueInstallments = loan.schedule.filter(inst => {
         if (inst.status === 'paid') return false;
         const dueDate = new Date(inst.dueDate);
-        return dueDate < startOfToday;
+        return dueDate < refDay;
     });
 
     if (overdueInstallments.length === 0) {
@@ -103,7 +103,7 @@ const calculatePercentPenaltyV3 = (loan, settings) => {
     if (applyPerInstallment) {
         overdueInstallments.forEach(inst => {
             const base = getBaseAmountV3(inst, applyOn);
-            const periodsOverdue = getOverduePeriods(inst.dueDate, periodMode, gracePeriod, settings);
+            const periodsOverdue = getOverduePeriods(inst.dueDate, periodMode, gracePeriod, settings, refDay);
             const penaltyForInst = (base * value / 100) * periodsOverdue;
 
             breakdown.push({
@@ -119,7 +119,7 @@ const calculatePercentPenaltyV3 = (loan, settings) => {
     } else {
         const oldestOverdue = overdueInstallments[0];
         const base = getBaseAmountV3(oldestOverdue, applyOn);
-        const periodsOverdue = getOverduePeriods(oldestOverdue.dueDate, periodMode, gracePeriod, settings);
+        const periodsOverdue = getOverduePeriods(oldestOverdue.dueDate, periodMode, gracePeriod, settings, refDay);
         const penalty = (base * value / 100) * periodsOverdue;
 
         breakdown.push({
@@ -142,9 +142,9 @@ const calculatePercentPenaltyV3 = (loan, settings) => {
     };
 };
 
-const getOverduePeriods = (dueDate, periodMode, gracePeriod, settings) => {
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+const getOverduePeriods = (dueDate, periodMode, gracePeriod, settings, refDay = null) => {
+    const startOfToday = refDay || new Date();
+    if (!refDay) startOfToday.setHours(0, 0, 0, 0);
 
     const graceDeadline = new Date(dueDate);
     graceDeadline.setDate(graceDeadline.getDate() + gracePeriod);

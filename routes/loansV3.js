@@ -58,6 +58,8 @@ router.post('/:id/reject', loanControllerV3.rejectLoan);
  * @access  Private
  */
 router.post('/:id/payments', loanControllerV3.registerPayment);
+router.post('/:id/apply-penalty', loanControllerV3.applyPenalty);
 router.get('/:id/payments', loanControllerV3.getLoanPayments);
+router.delete('/:id/payments/:paymentId', loanControllerV3.deletePaymentV3);
 
 module.exports = router;

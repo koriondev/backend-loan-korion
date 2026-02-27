@@ -170,7 +170,24 @@ exports.generateScheduleV3 = (params) => {
     };
 };
 
+/**
+ * Internal helper to get next recurring date
+ */
+const getNextDateInternal = (fromDate, frequency) => {
+    const date = new Date(fromDate);
+    switch (frequency.toLowerCase()) {
+        case 'daily': date.setDate(date.getDate() + 1); break;
+        case 'weekly': date.setDate(date.getDate() + 7); break;
+        case 'biweekly': date.setDate(date.getDate() + 14); break;
+        case 'monthly': date.setMonth(date.getMonth() + 1); break;
+        default: date.setDate(date.getDate() + 7);
+    }
+    return adjustToNextWorkingDay(date);
+};
+
 module.exports = {
     generateScheduleV3: exports.generateScheduleV3,
-    isWorkingDay: (date) => !isNonWorkingDay(date)
+    isWorkingDay: (date) => !isNonWorkingDay(date),
+    adjustToNextWorkingDay,
+    getNextDueDate: getNextDateInternal
 };

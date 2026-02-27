@@ -366,40 +366,36 @@ exports.deleteTransaction = async (req, res) => {
     }
 
     // 3. VALIDACIÓN CRÍTICA: Solo se pueden eliminar transacciones SIN cliente
-    if (transaction.client) {
+    // Excepción: dividend_distribution son registros internos que se pueden eliminar aunque tengan cliente
+    if (transaction.client && transaction.type !== 'dividend_distribution') {
       return res.status(400).json({
         error: "No se puede eliminar esta transacción porque está asociada a un cliente. Solo se pueden eliminar movimientos internos (ingresos/gastos manuales)."
       });
     }
 
-    // 4. Revertir el balance de la cartera
-    const wallet = await Wallet.findById(transaction.wallet);
+    // 4. Revertir el balance de la cartera (si existe)
+    const wallet = transaction.wallet ? await Wallet.findById(transaction.wallet) : null;
 
-    if (!wallet) {
-      return res.status(404).json({ error: "Cartera asociada no encontrada" });
+    if (wallet) {
+      const currentBalance = Number(wallet.balance) || 0;
+      const amountToReverse = Number(transaction.amount);
+
+      // Revertir según el tipo de transacción
+      if (['in_payment', 'entry'].includes(transaction.type)) {
+        wallet.balance = currentBalance - amountToReverse;
+      } else {
+        wallet.balance = currentBalance + amountToReverse;
+      }
+
+      wallet.balance = Math.round(wallet.balance * 100) / 100;
+      await wallet.save();
     }
-
-    const currentBalance = Number(wallet.balance) || 0;
-    const amountToReverse = Number(transaction.amount);
-
-    // Revertir según el tipo de transacción
-    if (['in_payment', 'entry'].includes(transaction.type)) {
-      // Si fue un ingreso, ahora lo restamos
-      wallet.balance = currentBalance - amountToReverse;
-    } else {
-      // Si fue un gasto, ahora lo sumamos de vuelta
-      wallet.balance = currentBalance + amountToReverse;
-    }
-
-    // Evitar errores de decimales flotantes
-    wallet.balance = Math.round(wallet.balance * 100) / 100;
-    await wallet.save();
 
     // 5. Eliminar la transacción
     await Transaction.findByIdAndDelete(id);
 
-    // 6. Recalcular para asegurar sincronía perfecta con la nueva lógica
-    const finalBalance = await recalculateWalletBalance(wallet._id);
+    // 6. Recalcular para asegurar sincronía perfecta (solo si hay cartera)
+    const finalBalance = wallet ? await recalculateWalletBalance(wallet._id) : null;
 
     res.json({
       message: "Transacción eliminada exitosamente",

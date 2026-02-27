@@ -98,10 +98,12 @@ exports.generateReceiptPDF = (transaction, client, loan, settings) => {
             const capital = b.appliedToCapital || b.capital || 0;
             const interest = b.appliedToInterest || b.interest || 0;
             const mora = b.appliedToMora || b.mora || 0;
+            const otros = transaction.otherCharges || b.otherCharges || 0;
 
             row("Capital:", formatCurrency(capital));
             row("Interes:", formatCurrency(interest));
             row("Mora:", formatCurrency(mora));
+            if (otros > 0) row("Otros Cargos:", formatCurrency(otros));
 
             doc.text("________________", { align: 'right' });
             doc.moveDown(0.5);

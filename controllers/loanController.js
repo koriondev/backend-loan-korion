@@ -656,7 +656,8 @@ exports.registerPayment = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { loanId, amount, paymentType, walletId } = req.body; // paymentType: 'quota' | 'capital'
+    const { loanId, amount, paymentType, walletId, customDate } = req.body; // paymentType: 'quota' | 'capital'
+    const paymentDate = customDate ? new Date(customDate) : new Date();
 
     console.log('=== REGISTRAR PAGO DEBUG ===');
     console.log('loanId recibido:', loanId);
@@ -670,7 +671,18 @@ exports.registerPayment = async (req, res) => {
     // Obtener clientId del préstamo
     const clientId = loan.client;
     const client = await Client.findById(clientId).session(session);
-    const wallet = await Wallet.findById(walletId).session(session);
+
+    // Fallback de Cartera: Body -> Loan -> Default business wallet
+    let finalWalletId = walletId;
+    if (!finalWalletId) {
+      finalWalletId = loan.wallet;
+    }
+    if (!finalWalletId) {
+      const defaultWallet = await Wallet.findOne({ businessId: req.user.businessId, isDefault: true }).session(session);
+      if (defaultWallet) finalWalletId = defaultWallet._id;
+    }
+
+    const wallet = await Wallet.findById(finalWalletId).session(session);
     if (!wallet) throw new Error("Caja no encontrada");
 
     // Validaciones básicas
@@ -1513,8 +1525,8 @@ exports.updateLoan = async (req, res) => {
 // 2.1 OBTENER UN PRÉSTAMO
 exports.getLoan = async (req, res) => {
   try {
-    let loan = await Loan.findById(req.params.id).populate('client');
-    let modelType = 'V1';
+    let loan = await LoanV3.findById(req.params.id).populate('clientId');
+    let modelType = 'V3';
 
     if (!loan) {
       loan = await LoanV2.findById(req.params.id).populate('clientId');
@@ -1522,8 +1534,8 @@ exports.getLoan = async (req, res) => {
     }
 
     if (!loan) {
-      loan = await LoanV3.findById(req.params.id).populate('clientId');
-      if (loan) modelType = 'V3';
+      loan = await Loan.findById(req.params.id).populate('client');
+      if (loan) modelType = 'V1';
     }
 
     if (!loan) return res.status(404).json({ error: "Préstamo no encontrado" });
@@ -1562,71 +1574,253 @@ exports.deletePayment = async (req, res) => {
       return res.status(404).json({ error: "Transacción no encontrada" });
     }
 
-    // Get loan ID from metadata
-    const loanId = transaction.metadata?.loanId || transaction.loan;
+    // Identificar si es V3 o V1
+    const LoanV3 = require('../models/LoanV3');
+    const PaymentV2 = require('../models/PaymentV2');
+
+    let isV3 = !!transaction.loanV3;
+    const loanId = transaction.metadata?.loanId || transaction.loan || transaction.loanV3;
+
     if (!loanId) {
       await session.abortTransaction();
       return res.status(400).json({ error: "No se puede identificar el préstamo asociado" });
     }
 
+    // Comprobar si realmente es V3 por fallback en caso de préstamo migrado
+    if (!isV3) {
+      const loanTest = await Loan.findById(loanId).session(session);
+      if (!loanTest) {
+        const loanV3Test = await LoanV3.findById(loanId).session(session);
+        if (loanV3Test) isV3 = true;
+      }
+      console.log(`Fallback V3 Check -> isV3: ${isV3}, loanTestExists: ${!!loanTest}`);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // LÓGICA VERSIÓN 3 (SÓLO PENALIDADES POR AHORA)
+    // ─────────────────────────────────────────────────────────────────
+    if (isV3) {
+      const loan = await LoanV3.findById(loanId).session(session);
+
+      if (!loan) {
+        await session.abortTransaction();
+        return res.status(404).json({ error: "Préstamo V3 no encontrado" });
+      }
+
+      // Validar que sea un pago de penalidad permitido para reversión
+      if (transaction.category === 'Otros Cargos' && transaction.metadata?.concept === 'penalty_shift') {
+        const originalQuotaNumber = transaction.metadata.originalQuotaNumber;
+
+        // 1. Encontrar la cuota afectada
+        const paidQuota = loan.schedule.find(q => q.number === originalQuotaNumber);
+        if (!paidQuota) throw new Error("No se encontró la cuota original afectada por la penalidad");
+
+        // 2. Revertir estado de la cuota
+        paidQuota.status = 'pending';
+        paidQuota.paidAmount = mongoose.Types.Decimal128.fromString("0.00");
+        paidQuota.interestPaid = mongoose.Types.Decimal128.fromString("0.00");
+        paidQuota.capitalPaid = mongoose.Types.Decimal128.fromString("0.00");
+        paidQuota.paidDate = null;
+        if (paidQuota.notes) {
+          paidQuota.notes = paidQuota.notes.replace(" [Penalidad Aplicada]", "").trim();
+        }
+
+        // 3. Remover la última cuota añadida y regenerar fechas
+        loan.schedule.pop(); // Elimina la cuota extra al final
+
+        const amortizationEngineV3 = require('../engines/amortizationEngineV3');
+        let currentRefDate = null;
+
+        for (let j = 0; j < loan.schedule.length; j++) {
+          if (loan.schedule[j].number === originalQuotaNumber) {
+            currentRefDate = loan.schedule[j].dueDate;
+          } else if (loan.schedule[j].number > originalQuotaNumber) {
+            currentRefDate = amortizationEngineV3.getNextDueDate(currentRefDate, loan.frequency);
+            loan.schedule[j].dueDate = currentRefDate;
+          }
+        }
+
+        // 4. Restaurar Financial Model
+        loan.financialModel.interestTotal -= transaction.amount;
+        loan.financialModel.interestPaid -= transaction.amount;
+        loan.duration -= 1;
+
+        loan.markModified('schedule');
+        loan.markModified('financialModel');
+        await loan.save({ session });
+
+        // 5. Restaurar Cartera
+        const wallet = await Wallet.findById(transaction.wallet).session(session);
+        if (wallet) {
+          wallet.balance -= transaction.amount;
+          await wallet.save({ session });
+        }
+
+        // 6. Eliminar Transacción y Registro de Pago (PaymentV2)
+        await Transaction.findByIdAndDelete(transactionId).session(session);
+        await PaymentV2.findOneAndDelete({
+          loanId: loan._id,
+          appliedPenalty: transaction.amount,
+        }).sort({ date: -1 }).session(session);
+
+        await session.commitTransaction();
+        return res.json({ message: "Pago de penalidad (V3) revertido correctamente", loan });
+
+      } else if (transaction.category === 'Pago Préstamo') {
+        const breakdown = transaction.metadata?.breakdown || { interest: 0, capital: 0, mora: 0, appliedToCapital: 0, appliedToInterest: 0 };
+        const getDec = (v) => v && v.$numberDecimal ? parseFloat(v.$numberDecimal) : (parseFloat(v) || 0);
+
+        let appInterest = breakdown.appliedToInterest || breakdown.interest || 0;
+        let appCapital = breakdown.appliedToCapital || breakdown.capital || 0;
+
+        for (let quota of loan.schedule) {
+          const quotaPaidTotal = getDec(quota.paidAmount || quota.paidInterest);
+          if (quotaPaidTotal > 0) {
+            let qInterestPaid = getDec(quota.interestPaid || quota.paidInterest);
+            let qCapitalPaid = getDec(quota.capitalPaid || quota.paidCapital);
+
+            if (qInterestPaid > 0 && appInterest > 0) {
+              const toReverse = Math.min(qInterestPaid, appInterest);
+              qInterestPaid -= toReverse;
+              appInterest -= toReverse;
+            }
+
+            if (qCapitalPaid > 0 && appCapital > 0) {
+              const toReverse = Math.min(qCapitalPaid, appCapital);
+              qCapitalPaid -= toReverse;
+              appCapital -= toReverse;
+            }
+
+            quota.interestPaid = mongoose.Types.Decimal128.fromString(qInterestPaid.toFixed(2));
+            quota.capitalPaid = mongoose.Types.Decimal128.fromString(qCapitalPaid.toFixed(2));
+            quota.paidAmount = mongoose.Types.Decimal128.fromString((qInterestPaid + qCapitalPaid).toFixed(2));
+
+            if (getDec(quota.paidAmount) < getDec(quota.amount)) {
+              quota.status = 'pending';
+            }
+          }
+        }
+
+        if (loan.currentCapital !== undefined && typeof loan.currentCapital === 'number') {
+          loan.currentCapital += (breakdown.appliedToCapital || breakdown.capital || 0);
+        }
+
+        loan.markModified('schedule');
+        await loan.save({ session });
+
+        // Restaurar Cartera
+        const wallet = await Wallet.findById(transaction.wallet).session(session);
+        if (wallet) {
+          wallet.balance -= transaction.amount;
+          await wallet.save({ session });
+        }
+
+        // Eliminar Transacción
+        await Transaction.findByIdAndDelete(transactionId).session(session);
+        if (transaction.receiptId) {
+          await PaymentV2.findOneAndDelete({ receiptId: transaction.receiptId }).session(session);
+        }
+
+        await session.commitTransaction();
+        return res.json({ message: "Pago Regular (Migrado a V3) revertido correctamente", loan });
+
+      } else {
+        await session.abortTransaction();
+        return res.status(400).json({ error: "Por seguridad, los pagos regulares divididos de la Versión 3 no pueden ser eliminados en este módulo. Cancele el préstamo o acuda a soporte técnico." });
+      }
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────
+    // LÓGICA VERSIÓN 1 (PAGOS REGULARES Y PENALIDADES)
+    // ─────────────────────────────────────────────────────────────────
     const loan = await Loan.findById(loanId).session(session);
+    console.log(`Lógica V1 -> loanExists: ${!!loan}`);
+
     if (!loan) {
       await session.abortTransaction();
       return res.status(404).json({ error: "Préstamo no encontrado" });
     }
 
-    // Reverse the payment from loan schedule
-    const breakdown = transaction.metadata?.breakdown || { appliedToCapital: 0, appliedToInterest: 0, appliedToMora: 0 };
+    if (transaction.metadata?.concept === 'penalty_shift') {
+      // Revertir Penalidad V1
+      const originalQuotaNumber = transaction.metadata.originalQuotaNumber;
+      const paidQuota = loan.schedule.find(q => q.number === originalQuotaNumber);
+      if (!paidQuota) throw new Error("No se encontró la cuota original afectada");
 
-    for (let quota of loan.schedule) {
-      if (quota.paidAmount > 0) {
-        // Reverse interest payment
-        if (quota.paidInterest && breakdown.appliedToInterest > 0) {
-          const toReverse = Math.min(quota.paidInterest, breakdown.appliedToInterest);
-          quota.paidInterest -= toReverse;
-          breakdown.appliedToInterest -= toReverse;
-        }
+      paidQuota.status = 'pending';
+      paidQuota.paidAmount = 0;
+      paidQuota.paidInterest = 0;
+      paidQuota.paidCapital = 0;
+      paidQuota.paidDate = null;
+      if (paidQuota.notes) {
+        paidQuota.notes = paidQuota.notes.replace(" [Penalidad Aplicada]", "").trim();
+      }
 
-        // Reverse capital payment
-        if (quota.paidCapital && breakdown.appliedToCapital > 0) {
-          const toReverse = Math.min(quota.paidCapital, breakdown.appliedToCapital);
-          quota.paidCapital -= toReverse;
-          breakdown.appliedToCapital -= toReverse;
-        }
+      loan.schedule.pop(); // Remover última cuota
 
-        // Update quota status
-        quota.paidAmount = (quota.paidInterest || 0) + (quota.paidCapital || 0);
-        if (quota.paidAmount < quota.amount) {
-          quota.status = 'pending';
+      // Reconstruir fechas hacia adelante
+      const daysMap = { 'daily': 1, 'weekly': 7, 'biweekly': 15, 'monthly': 30 };
+      const daysToAdd = daysMap[loan.frequency] || 7;
+      let currentRefDate = null;
+
+      for (let j = 0; j < loan.schedule.length; j++) {
+        if (loan.schedule[j].number === originalQuotaNumber) {
+          currentRefDate = new Date(loan.schedule[j].dueDate || loan.schedule[j].date);
+        } else if (loan.schedule[j].number > originalQuotaNumber) {
+          currentRefDate = new Date(currentRefDate);
+          currentRefDate.setDate(currentRefDate.getDate() + daysToAdd);
+          loan.schedule[j].dueDate = currentRefDate;
+          loan.schedule[j].date = currentRefDate;
         }
+      }
+
+      loan.term -= 1;
+      loan.markModified('schedule');
+
+    } else {
+      // Revertir Pago Regular V1
+      const breakdown = transaction.metadata?.breakdown || { appliedToCapital: 0, appliedToInterest: 0, appliedToMora: 0 };
+
+      for (let quota of loan.schedule) {
+        if (quota.paidAmount > 0) {
+          if (quota.paidInterest && breakdown.appliedToInterest > 0) {
+            const toReverse = Math.min(quota.paidInterest, breakdown.appliedToInterest);
+            quota.paidInterest -= toReverse;
+            breakdown.appliedToInterest -= toReverse;
+          }
+          if (quota.paidCapital && breakdown.appliedToCapital > 0) {
+            const toReverse = Math.min(quota.paidCapital, breakdown.appliedToCapital);
+            quota.paidCapital -= toReverse;
+            breakdown.appliedToCapital -= toReverse;
+          }
+          quota.paidAmount = (quota.paidInterest || 0) + (quota.paidCapital || 0);
+          if (quota.paidAmount < quota.amount) {
+            quota.status = 'pending';
+          }
+        }
+      }
+      loan.balance += transaction.amount;
+
+      const client = await Client.findById(loan.client).session(session);
+      if (client) {
+        client.balance += transaction.amount;
+        await client.save({ session });
       }
     }
 
-    // Restore loan balance
-    loan.balance += transaction.amount;
-
-    // Update client balance
-    const client = await Client.findById(loan.client).session(session);
-    if (client) {
-      client.balance += transaction.amount;
-      await client.save({ session });
-    }
-
-    // Restore wallet balance (reverse the income)
+    // Comunes V1 (Para penalidades y pagos regulares)
     const wallet = await Wallet.findById(transaction.wallet).session(session);
     if (wallet) {
       wallet.balance -= transaction.amount;
       await wallet.save({ session });
     }
 
-    // Delete the transaction
     await Transaction.findByIdAndDelete(transactionId).session(session);
-
-    // Save loan changes
     await loan.save({ session });
 
     await session.commitTransaction();
-    res.json({ message: "Pago eliminado correctamente", loan });
+    res.json({ message: "Transacción eliminada y préstamo restaurado correctamente", loan });
 
   } catch (error) {
     await session.abortTransaction();
@@ -1937,5 +2131,110 @@ exports.updatePenaltyConfig = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
+  }
+};
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * APPLY PENALTY (V1 Support)
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+exports.applyPenalty = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const { walletId, paymentMethod, notes, customDate } = req.body;
+    const paymentDate = customDate ? new Date(customDate) : new Date();
+
+    const loan = await Loan.findById(id).session(session);
+    if (!loan) throw new Error("Préstamo no encontrado");
+
+    // 1. Encontrar la primera cuota pendiente o parcial
+    const currentQuotaIndex = loan.schedule.findIndex(q => q.status === 'pending' || q.status === 'partial');
+    if (currentQuotaIndex === -1) throw new Error("No hay cuotas pendientes para aplicar penalidad");
+
+    const currentQuota = loan.schedule[currentQuotaIndex];
+
+    // 2. Calcular monto (Interés de la cuota actual)
+    const penaltyAmount = parseFloat(currentQuota.interest || 0);
+    if (penaltyAmount <= 0) throw new Error("Esta cuota no tiene intereses configurados para aplicar penalidad");
+
+    // 3. Lógica de Desplazamiento (Shift)
+    const originalPrincipal = currentQuota.capital || 0;
+    const originalInterest = currentQuota.interest || 0;
+
+    // Marcar cuota actual como pagada (Penalidad)
+    currentQuota.status = 'paid';
+    currentQuota.paidAmount = penaltyAmount;
+    currentQuota.paidInterest = penaltyAmount;
+    currentQuota.paidCapital = 0;
+    currentQuota.paidDate = paymentDate;
+    currentQuota.notes = (currentQuota.notes || "") + " [Penalidad Aplicada]";
+
+    // 4. Rodar fechas de las cuotas futuras
+    const daysMap = { 'daily': 1, 'weekly': 7, 'biweekly': 15, 'monthly': 30 };
+    const daysToAdd = daysMap[loan.frequency] || 7;
+
+    for (let i = currentQuotaIndex + 1; i < loan.schedule.length; i++) {
+      const quota = loan.schedule[i];
+      const d = new Date(quota.dueDate || quota.date);
+      d.setDate(d.getDate() + daysToAdd);
+      quota.dueDate = d;
+      quota.date = d; // V1 usa date
+    }
+
+    // 5. Agregar nueva cuota al final
+    const lastQuota = loan.schedule[loan.schedule.length - 1];
+    const lastDate = new Date(lastQuota.dueDate || lastQuota.date);
+    lastDate.setDate(lastDate.getDate() + daysToAdd);
+
+    loan.schedule.push({
+      number: loan.schedule.length + 1,
+      date: lastDate,
+      dueDate: lastDate,
+      amount: originalPrincipal + originalInterest,
+      capital: originalPrincipal,
+      interest: originalInterest,
+      status: 'pending'
+    });
+
+    // 6. Actualizar Balances V1
+    loan.term = (loan.term || loan.schedule.length - 1) + 1;
+
+    loan.markModified('schedule');
+    await loan.save({ session });
+
+    // 7. Finanzas
+    const finalWalletId = walletId || loan.wallet;
+    const wallet = await Wallet.findById(finalWalletId).session(session);
+    if (wallet) {
+      wallet.balance += penaltyAmount;
+      await wallet.save({ session });
+    }
+
+    const tx = await new Transaction({
+      businessId: loan.businessId,
+      type: 'in_payment',
+      category: 'Otros Cargos',
+      currency: 'DOP',
+      amount: penaltyAmount,
+      description: `Pago Penalidad (Gana Tiempo) - Préstamo #${loan._id.toString().slice(-6)}`,
+      wallet: finalWalletId,
+      client: loan.client,
+      date: paymentDate,
+      metadata: { concept: 'penalty_shift', originalQuotaNumber: currentQuota.number }
+    }).save({ session });
+
+    await session.commitTransaction();
+    res.json({ success: true, message: "Penalidad aplicada (V1) y calendario actualizado", transaction: tx });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Error applying penalty V1:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    session.endSession();
   }
 };

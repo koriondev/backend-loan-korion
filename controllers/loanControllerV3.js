@@ -307,19 +307,27 @@ exports.registerPayment = async (req, res) => {
     session.startTransaction();
 
     try {
-        const { amount, paymentMethod, walletId, notes } = req.body;
+        const { amount, paymentMethod, walletId, notes, customDate } = req.body;
+        const paymentDate = customDate ? new Date(customDate) : new Date();
         const loanId = req.params.id;
 
         const loan = await LoanV3.findById(loanId).session(session);
         if (!loan) throw new Error('Préstamo no encontrado');
 
         const client = await Client.findById(loan.clientId).session(session);
-        const finalWalletId = walletId || loan.fundingWalletId;
+
+        // Cartera fallback: Body -> Loan -> Default
+        let finalWalletId = walletId || loan.fundingWalletId;
+        if (!finalWalletId) {
+            const defaultWallet = await Wallet.findOne({ businessId: loan.businessId, isDefault: true }).session(session);
+            if (defaultWallet) finalWalletId = defaultWallet._id;
+        }
+
         const wallet = await Wallet.findById(finalWalletId).session(session);
         const settings = await Settings.findOne({ businessId: loan.businessId }).session(session);
 
-        // Calculate current penalty
-        const penaltyData = calculatePenaltyV3(loan, settings);
+        // Calculate current penalty USING paymentDate (for retroactive payments)
+        const penaltyData = calculatePenaltyV3(loan, settings, paymentDate);
 
         // Validate payment
         const validation = validatePaymentAmountV3(loan, amount, penaltyData);
@@ -337,132 +345,58 @@ exports.registerPayment = async (req, res) => {
         loan.markModified('financialModel');
         loan.markModified('penaltyConfig');
 
+        // FIX V3 MIGRATION: frequencyMode is sometimes saved as primitive 'standard', causing validation error
+        if (loan.frequencyMode && typeof loan.frequencyMode === 'string') {
+            loan.frequencyMode = {};
+        }
+
         // Save loan
         await loan.save({ session });
 
-        // Update wallet (OLD LOGIC REMOVED)
-        // wallet.balance += amount;  <-- REMOVED
-
         // ────────────────────────────────────────────────────────────────────
-        // SPLIT LOGIC (Capital vs Interest)
+        // REGISTRO SIMPLE: Todo el pago va a la cartera seleccionada
+        // (igual que en V1 — sin distribución automática entre carteras)
         // ────────────────────────────────────────────────────────────────────
-        const capitalToReturn = distribution.appliedCapital;
-        const interestToSplit = distribution.appliedInterest; // + penalty? Usually penalty goes to owner or platform. Let's assume Interest + Penalty follows split or Penalty is 100% Platform? 
-        // FIX: For now, Interest = Interest + Penalty for distribution simplicity, or separate?
-        // User request: "Interés: Se divide..." "Capital: Retorna íntegro".
-        // Let's treat Penalty as Interest for distribution for now OR add to Platform. 
-        // Assumption: Interest + Penalty are 'Profits'.
-
-        const totalProfit = interestToSplit + distribution.appliedPenalty;
-
-        // 1. RETURN CAPITAL (To Funding Wallet)
-        if (capitalToReturn > 0) {
-            const fundingWallet = await Wallet.findById(loan.fundingWalletId).session(session);
-            if (fundingWallet) {
-                fundingWallet.balance += capitalToReturn;
-                await fundingWallet.save({ session });
-
-                // Create Transaction Record
-                const Transaction = require('../models/Transaction');
-                await new Transaction({
-                    businessId: loan.businessId,
-                    type: 'in_payment',
-                    category: 'Retorno de Capital',
-                    currency: loan.currency || 'DOP',
-                    amount: capitalToReturn,
-                    description: `Pago Capital Préstamo #${loan.schedule[0]?.number || '-'}`,
-                    loanV3: loan._id,
-                    wallet: fundingWallet._id,
-                    client: loan.clientId,
-                    date: new Date()
-                }).save({ session });
-            }
+        if (wallet) {
+            wallet.balance += amount;
+            await wallet.save({ session });
         }
 
-        // 2. DISTRIBUTE PROFIT (Revenue Share)
-        if (totalProfit > 0) {
-            const { revenueShare, investorId, managerId } = loan;
+        const Transaction = require('../models/Transaction');
+        const receiptId = `REC-${Date.now().toString().slice(-6)}`;
 
-            // Calculate Shares
-            const investorShare = (totalProfit * (revenueShare.investorPercentage / 100));
-            const managerShare = (totalProfit * (revenueShare.managerPercentage / 100));
-            const platformShare = (totalProfit * (revenueShare.platformPercentage / 100));
+        const paidQuotaNumbers = distribution.quotasPaid?.map(q => `#${q}`) || [];
+        const descParts = [];
+        if (distribution.appliedInterest > 0) descParts.push(`Interés: ${distribution.appliedInterest.toFixed(2)}`);
+        if (distribution.appliedCapital > 0) descParts.push(`Capital: ${distribution.appliedCapital.toFixed(2)}`);
+        if (distribution.appliedPenalty > 0) descParts.push(`Mora: ${distribution.appliedPenalty.toFixed(2)}`);
 
-            // Helper to credit wallet
-            const creditToUserWallet = async (userId, amount, roleLabel) => {
-                if (amount <= 0) return;
-
-                // Find 'earnings' wallet for user
-                let userWallet = await Wallet.findOne({
-                    ownerId: userId,
-                    type: 'earnings',
-                    businessId: loan.businessId,
-                    currency: loan.currency || 'DOP'
-                }).session(session);
-
-                // If not exists, create one
-                if (!userWallet) {
-                    const currSuffix = loan.currency && loan.currency !== 'DOP' ? ` ${loan.currency}` : '';
-                    userWallet = new Wallet({
-                        name: `Nómina/Ganancias${currSuffix}`,
-                        ownerId: userId,
-                        type: 'earnings',
-                        businessId: loan.businessId,
-                        balance: 0,
-                        currency: loan.currency || 'DOP'
-                    });
-                    await userWallet.save({ session });
+        await new Transaction({
+            businessId: loan.businessId,
+            type: 'in_payment',
+            category: 'Pago Préstamo',
+            currency: loan.currency || 'DOP',
+            amount: amount,
+            description: `Pago Préstamo | ${descParts.join(' | ')}`,
+            loanV3: loan._id,
+            wallet: finalWalletId,
+            client: loan.clientId,
+            receiptId,
+            metadata: {
+                loanId: loan._id,
+                breakdown: {
+                    appliedCapital: distribution.appliedCapital,
+                    appliedToCapital: distribution.appliedCapital,
+                    appliedInterest: distribution.appliedInterest,
+                    appliedToInterest: distribution.appliedInterest,
+                    appliedPenalty: distribution.appliedPenalty,
+                    appliedToMora: distribution.appliedPenalty,
                 }
+            },
+            date: paymentDate
+        }).save({ session });
 
-                userWallet.balance += amount;
-                await userWallet.save({ session });
-
-                // Transaction Record
-                const Transaction = require('../models/Transaction');
-                await new Transaction({
-                    businessId: loan.businessId,
-                    type: 'dividend_distribution',
-                    category: `Dividendo ${roleLabel}`,
-                    currency: loan.currency || 'DOP',
-                    amount: amount,
-                    description: `Ganancia Préstamo (Interés+Mora)`,
-                    loanV3: loan._id,
-                    wallet: userWallet._id,
-                    client: loan.clientId, // <--- ADDED CLIENT
-                    metadata: { role: roleLabel, percentage: revenueShare[`${roleLabel}Percentage`] },
-                    date: new Date()
-                }).save({ session });
-            };
-
-            // Distributor Execution
-            await creditToUserWallet(investorId, investorShare, 'investor');
-            await creditToUserWallet(managerId, managerShare, 'manager');
-
-            // Platform/Expense Wallet (Non-user specific usually, or Admin)
-            // We search for a type='expense' wallet or default with the matching currency
-            let platformWallet = await Wallet.findOne({ type: 'expense', businessId: loan.businessId, currency: loan.currency || 'DOP' }).session(session);
-            if (!platformWallet) platformWallet = await Wallet.findOne({ isDefault: true, businessId: loan.businessId, currency: loan.currency || 'DOP' }).session(session); // Fallback
-
-            if (platformWallet && platformShare > 0) {
-                platformWallet.balance += platformShare;
-                await platformWallet.save({ session });
-                const Transaction = require('../models/Transaction');
-                await new Transaction({
-                    businessId: loan.businessId,
-                    type: 'dividend_distribution',
-                    category: 'Dividendo Plataforma',
-                    currency: loan.currency || 'DOP',
-                    amount: platformShare,
-                    description: 'Comisión Plataforma / Fondo Gastos',
-                    loanV3: loan._id,
-                    wallet: platformWallet._id,
-                    client: loan.clientId, // <--- ADDED CLIENT
-                    date: new Date()
-                }).save({ session });
-            }
-        }
-
-        // Update client balance (Already correct in original code)
+        // Update client balance
         const balanceReduction = distribution.appliedInterest + distribution.appliedCapital + distribution.appliedPenalty;
         await Client.findByIdAndUpdate(
             loan.clientId,
@@ -471,10 +405,9 @@ exports.registerPayment = async (req, res) => {
         );
 
         // Create payment record
-        const receiptId = `REC-${Date.now().toString().slice(-6)}`;
         const payment = new PaymentV2({
             loanId: loan._id,
-            date: new Date(),
+            date: paymentDate,
             amount,
             remainingPayment: 0,
             appliedPenalty: distribution.appliedPenalty,
@@ -734,4 +667,238 @@ exports.getLoanPayments = async (req, res) => {
     }
 };
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * APPLY PENALTY (Shift Schedule)
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+exports.applyPenalty = async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+        const { id } = req.params;
+        const { walletId, paymentMethod, notes, customDate } = req.body;
+        const paymentDate = customDate ? new Date(customDate) : new Date();
+
+        const loan = await LoanV3.findById(id).session(session);
+        if (!loan) throw new Error("Préstamo no encontrado");
+
+        // 1. Encontrar la primera cuota pendiente o parcial
+        const currentQuotaIndex = loan.schedule.findIndex(q => q.status === 'pending' || q.status === 'partial');
+        if (currentQuotaIndex === -1) throw new Error("No hay cuotas pendientes para aplicar penalidad");
+
+        const currentQuota = loan.schedule[currentQuotaIndex];
+        const amortizationEngineV3 = require('../engines/amortizationEngineV3');
+
+        // 2. Calcular monto de la penalidad (Interés de la cuota actual)
+        const penaltyAmount = (currentQuota.interestAmount?.$numberDecimal) ? parseFloat(currentQuota.interestAmount.$numberDecimal) : (parseFloat(currentQuota.interestAmount) || 0);
+
+        if (penaltyAmount <= 0) throw new Error("Esta cuota no tiene intereses pendientes para aplicar penalidad");
+
+        // 3. Lógica de Desplazamiento (Shift)
+        // Guardar montos originales para la nueva cuota final
+        const originalPrincipal = currentQuota.principalAmount;
+        const originalInterest = currentQuota.interestAmount;
+
+        // Marcar cuota actual como pagada (bajo concepto de penalidad)
+        currentQuota.status = 'paid';
+        currentQuota.paidAmount = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
+        currentQuota.interestPaid = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
+        currentQuota.capitalPaid = mongoose.Types.Decimal128.fromString("0.00");
+        currentQuota.paidDate = paymentDate;
+        currentQuota.notes = (currentQuota.notes || "") + " [Penalidad Aplicada]";
+
+        // 4. Rodar fechas de las cuotas futuras
+        // Desde la cuota actual + 1 en adelante, sumamos un periodo
+        for (let i = currentQuotaIndex + 1; i < loan.schedule.length; i++) {
+            const quota = loan.schedule[i];
+            quota.dueDate = amortizationEngineV3.getNextDueDate(quota.dueDate, loan.frequency);
+        }
+
+        // 5. Agregar nueva cuota al final
+        const lastQuota = loan.schedule[loan.schedule.length - 1];
+        const newDueDate = amortizationEngineV3.getNextDueDate(lastQuota.dueDate, loan.frequency);
+
+        loan.schedule.push({
+            number: loan.schedule.length + 1,
+            dueDate: newDueDate,
+            amount: mongoose.Types.Decimal128.fromString((parseFloat(originalPrincipal.toString()) + parseFloat(originalInterest.toString())).toFixed(2)),
+            principalAmount: originalPrincipal,
+            interestAmount: originalInterest,
+            balance: lastQuota.balance, // El balance se mantiene igual ya que no se amortizó capital
+            status: 'pending',
+            daysOfGrace: 0
+        });
+
+        // 6. Actualizar totales del préstamo (el interés total sube por la penalidad)
+        loan.financialModel.interestTotal += penaltyAmount;
+        loan.financialModel.interestPaid += penaltyAmount;
+        loan.duration += 1;
+
+        loan.markModified('schedule');
+        loan.markModified('financialModel');
+
+        if (loan.frequencyMode && typeof loan.frequencyMode === 'string') {
+            loan.frequencyMode = {};
+        }
+
+        await loan.save({ session });
+
+        // 7. Registrar Finanzas
+        let finalWalletId = walletId || loan.fundingWalletId;
+        if (!finalWalletId) {
+            const defaultWallet = await Wallet.findOne({ businessId: loan.businessId, isDefault: true }).session(session);
+            if (defaultWallet) finalWalletId = defaultWallet._id;
+        }
+
+        const wallet = await Wallet.findById(finalWalletId).session(session);
+        if (wallet) {
+            wallet.balance += penaltyAmount;
+            await wallet.save({ session });
+        }
+
+        const Transaction = require('../models/Transaction');
+        const tx = await new Transaction({
+            businessId: loan.businessId,
+            type: 'in_payment',
+            category: 'Otros Cargos',
+            currency: loan.currency || 'DOP',
+            amount: penaltyAmount,
+            description: `Pago Penalidad (Gana Tiempo) - Préstamo #${loan._id.toString().slice(-6)}`,
+            loanV3: loan._id,
+            wallet: finalWalletId,
+            client: loan.clientId,
+            date: paymentDate,
+            metadata: { concept: 'penalty_shift', originalQuotaNumber: currentQuota.number }
+        }).save({ session });
+
+        // 8. Crear Registro de Pago
+        const receiptId = `REC-PEN-${Date.now().toString().slice(-6)}`;
+        const PaymentV2 = require('../models/PaymentV2');
+        const payment = new PaymentV2({
+            loanId: loan._id,
+            date: new Date(),
+            amount: penaltyAmount,
+            remainingPayment: 0,
+            appliedPenalty: 0,
+            appliedInterest: 0,
+            appliedCapital: 0,
+            otherCharges: penaltyAmount, // Nuevo campo o usar notas
+            paymentMethod: paymentMethod || 'cash',
+            walletId: finalWalletId,
+            userId: req.user.id || req.user._id,
+            receiptId,
+            notes: (notes || "") + " [Penalidad Aplicada]",
+            businessId: loan.businessId
+        });
+        await payment.save({ session });
+
+        await session.commitTransaction();
+        res.json({ success: true, message: "Penalidad aplicada y calendario actualizado", payment });
+
+    } catch (error) {
+        await session.abortTransaction();
+        console.error('Error applying penalty:', error);
+        res.status(500).json({ error: error.message });
+    } finally {
+        session.endSession();
+    }
+};
+
 module.exports = exports;
+
+/**
+ * DELETE PAYMENT V3
+ * Revierte un pago de PaymentV2 en un préstamo V3 restaurando el calendario y el balance
+ */
+exports.deletePaymentV3 = async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+        const { id: loanId, paymentId } = req.params;
+        const PaymentV2 = require('../models/PaymentV2');
+        const Transaction = require('../models/Transaction');
+
+        const payment = await PaymentV2.findById(paymentId).session(session);
+        if (!payment) throw new Error('Pago no encontrado');
+
+        const loan = await LoanV3.findById(loanId).session(session);
+        if (!loan) throw new Error('Préstamo no encontrado');
+
+        if (loan.businessId.toString() !== req.user.businessId.toString()) {
+            throw new Error('Acceso denegado');
+        }
+
+        const { appliedCapital, appliedInterest, appliedPenalty, amount, walletId } = payment;
+        const getD = (v) => v && v.$numberDecimal ? parseFloat(v.$numberDecimal) : parseFloat(v || 0);
+
+        // Revertir cuotas pagadas por este pago (de más reciente a más antigua)
+        let remainingToRevert = amount;
+        for (let i = loan.schedule.length - 1; i >= 0 && remainingToRevert > 0; i--) {
+            const q = loan.schedule[i];
+            const paidOnThisQuota = getD(q.paidAmount);
+            if (paidOnThisQuota <= 0) continue;
+
+            const revertAmt = Math.min(paidOnThisQuota, remainingToRevert);
+            const newPaid = Math.max(0, paidOnThisQuota - revertAmt);
+            loan.schedule[i].paidAmount = mongoose.Types.Decimal128.fromString(newPaid.toFixed(2));
+
+            if (newPaid <= 0) {
+                loan.schedule[i].status = 'pending';
+                loan.schedule[i].paidDate = null;
+                loan.schedule[i].capitalPaid = mongoose.Types.Decimal128.fromString('0.00');
+                loan.schedule[i].interestPaid = mongoose.Types.Decimal128.fromString('0.00');
+            } else {
+                loan.schedule[i].status = 'partial';
+            }
+            remainingToRevert -= revertAmt;
+        }
+
+        // Restaurar métricas financieras
+        loan.financialModel = loan.financialModel || {};
+        loan.financialModel.interestPaid = Math.max(0, getD(loan.financialModel.interestPaid) - appliedInterest);
+        loan.currentCapital = Math.min(getD(loan.amount), getD(loan.currentCapital) + appliedCapital);
+        if (loan.penaltyConfig) {
+            loan.penaltyConfig.paidPenalty = Math.max(0, getD(loan.penaltyConfig.paidPenalty) - appliedPenalty);
+        }
+
+        loan.markModified('schedule');
+        loan.markModified('financialModel');
+        loan.markModified('penaltyConfig');
+        await loan.save({ session });
+
+        // Ajustar balance de cartera
+        if (walletId) {
+            const wallet = await Wallet.findById(walletId).session(session);
+            if (wallet) {
+                wallet.balance = Math.max(0, wallet.balance - amount);
+                await wallet.save({ session });
+            }
+        }
+
+        // Actualizar balance del cliente
+        await Client.findByIdAndUpdate(
+            loan.clientId,
+            { $inc: { balance: amount } },
+            { session }
+        );
+
+        // Eliminar la Transaction relacionada (si existe)
+        await Transaction.deleteMany({ loanV3: loanId, receiptId: payment.receiptId }).session(session);
+
+        // Eliminar el PaymentV2
+        await PaymentV2.findByIdAndDelete(paymentId).session(session);
+
+        await session.commitTransaction();
+        res.json({ success: true, message: 'Pago eliminado y préstamo restaurado correctamente' });
+
+    } catch (error) {
+        await session.abortTransaction();
+        console.error('Error deleting V3 payment:', error);
+        res.status(500).json({ error: error.message });
+    } finally {
+        session.endSession();
+    }
+};
+

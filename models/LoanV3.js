@@ -217,7 +217,10 @@ const LoanV3Schema = new mongoose.Schema({
         required: true
     },
 
-    frequencyMode: FrequencyConfigSchema,
+    frequencyMode: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {}
+    },
 
     startDate: {
         type: Date,
@@ -250,18 +253,15 @@ const LoanV3Schema = new mongoose.Schema({
     // ─────────────────────────────────────────────────────────────────────────
     fundingWalletId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'Wallet',
-        required: true
+        ref: 'Wallet'
     },
     investorId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
+        ref: 'User'
     },
     managerId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
+        ref: 'User'
     },
     approvalStatus: {
         type: String,
@@ -273,9 +273,9 @@ const LoanV3Schema = new mongoose.Schema({
     // REVENUE SHARE CONFIG (SNAPSHOT)
     // ─────────────────────────────────────────────────────────────────────────
     revenueShare: {
-        investorPercentage: { type: Number, required: true },
-        managerPercentage: { type: Number, required: true },
-        platformPercentage: { type: Number, required: true }
+        investorPercentage: { type: Number },
+        managerPercentage: { type: Number },
+        platformPercentage: { type: Number }
     },
 
     // ─────────────────────────────────────────────────────────────────────────
