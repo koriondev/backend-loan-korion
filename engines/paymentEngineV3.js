@@ -44,7 +44,8 @@ exports.distributePaymentV3 = (loan, amount, currentPenalty) => {
         };
 
         // 2a. Pay Interest
-        const pendingInterest = getVal(inst.interestAmount) - getVal(inst.interestPaid);
+        const rawInterestTotal = inst.interestAmount != null ? inst.interestAmount : inst.interest;
+        const pendingInterest = getVal(rawInterestTotal) - getVal(inst.interestPaid);
         if (pendingInterest > 0.01) {
             const interestPayment = Math.min(remainingPayment, pendingInterest);
             installmentUpdate.interestPaid = interestPayment;
@@ -54,7 +55,8 @@ exports.distributePaymentV3 = (loan, amount, currentPenalty) => {
 
         // 2b. Pay Capital
         if (remainingPayment > 0.01) {
-            const pendingCapital = getVal(inst.principalAmount) - getVal(inst.capitalPaid);
+            const rawCapitalTotal = inst.principalAmount != null ? inst.principalAmount : inst.capital;
+            const pendingCapital = getVal(rawCapitalTotal) - getVal(inst.capitalPaid);
             if (pendingCapital > 0.01) {
                 const capitalPayment = Math.min(remainingPayment, pendingCapital);
                 installmentUpdate.capitalPaid = capitalPayment;
@@ -64,10 +66,12 @@ exports.distributePaymentV3 = (loan, amount, currentPenalty) => {
         }
 
         // Determine new status
+        const rawInterestTotal = inst.interestAmount != null ? inst.interestAmount : inst.interest;
+        const rawCapitalTotal = inst.principalAmount != null ? inst.principalAmount : inst.capital;
         const totalInterestPaid = getVal(inst.interestPaid) + installmentUpdate.interestPaid;
         const totalCapitalPaid = getVal(inst.capitalPaid) + installmentUpdate.capitalPaid;
 
-        if (totalInterestPaid >= (getVal(inst.interestAmount) - 0.05) && totalCapitalPaid >= (getVal(inst.principalAmount) - 0.05)) {
+        if (totalInterestPaid >= (getVal(rawInterestTotal) - 0.05) && totalCapitalPaid >= (getVal(rawCapitalTotal) - 0.05)) {
             installmentUpdate.newStatus = 'paid';
         } else if (totalInterestPaid > 0.01 || totalCapitalPaid > 0.01) {
             installmentUpdate.newStatus = 'partial';

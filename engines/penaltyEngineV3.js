@@ -166,9 +166,9 @@ const getOverduePeriods = (dueDate, periodMode, gracePeriod, settings, refDay = 
 const getBaseAmountV3 = (installment, applyOn) => {
     switch (applyOn) {
         case 'quota': return getVal(installment.amount);
-        case 'capital': return getVal(installment.principalAmount);
-        case 'interest': return getVal(installment.interestAmount);
-        case 'balance': return getVal(installment.balance);
+        case 'capital': return getVal(installment.principalAmount != null ? installment.principalAmount : installment.capital);
+        case 'interest': return getVal(installment.interestAmount != null ? installment.interestAmount : installment.interest);
+        case 'balance': return getVal(installment.balance != null ? installment.balance : (installment.balance_after != null ? installment.balance_after : installment.balance_start));
         default: return getVal(installment.amount);
     }
 };

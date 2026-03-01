@@ -122,6 +122,12 @@ const ScheduleItemSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.Decimal128,
         required: true
     },
+    // V1/V2 Backwards Compatibility
+    capital: mongoose.Schema.Types.Mixed,
+    interest: mongoose.Schema.Types.Mixed,
+    balance_after: mongoose.Schema.Types.Mixed,
+    balance_start: mongoose.Schema.Types.Mixed,
+
     daysOfGrace: {
         type: Number,
         default: 0
@@ -207,6 +213,11 @@ const LoanV3Schema = new mongoose.Schema({
     },
 
     duration: {
+        type: Number,
+        default: 0
+    },
+
+    initialDuration: {
         type: Number,
         default: 0
     },
@@ -344,6 +355,37 @@ LoanV3Schema.index({ createdAt: -1 });
 // ═══════════════════════════════════════════════════════════════════════════
 // MIDDLEWARE
 // ═══════════════════════════════════════════════════════════════════════════
+LoanV3Schema.pre('validate', function (next) {
+    if (this.schedule && this.schedule.length > 0) {
+        this.schedule.forEach(item => {
+            if (item.principalAmount == null && item.capital != null) {
+                // Determine raw value
+                let capVal = item.capital;
+                if (capVal && capVal.$numberDecimal) capVal = capVal.$numberDecimal;
+                item.principalAmount = mongoose.Types.Decimal128.fromString(parseFloat(capVal || 0).toFixed(2));
+            }
+            if (item.interestAmount == null && item.interest != null) {
+                let intVal = item.interest;
+                if (intVal && intVal.$numberDecimal) intVal = intVal.$numberDecimal;
+                item.interestAmount = mongoose.Types.Decimal128.fromString(parseFloat(intVal || 0).toFixed(2));
+            }
+            if (item.balance == null && (item.balance_after != null || item.balance_start != null)) {
+                let balVal = item.balance_after != null ? item.balance_after : item.balance_start;
+                if (balVal && balVal.$numberDecimal) balVal = balVal.$numberDecimal;
+                item.balance = mongoose.Types.Decimal128.fromString(parseFloat(balVal || 0).toFixed(2));
+            }
+
+            // Check if amount is missing but capital/interest are present
+            if (item.amount == null && item.principalAmount != null && item.interestAmount != null) {
+                const p = parseFloat(item.principalAmount.toString());
+                const i = parseFloat(item.interestAmount.toString());
+                item.amount = mongoose.Types.Decimal128.fromString((p + i).toFixed(2));
+            }
+        });
+    }
+    next();
+});
+
 LoanV3Schema.pre('save', function (next) {
     this.updatedAt = new Date();
     next();

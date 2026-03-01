@@ -54,6 +54,16 @@ const PaymentV2Schema = new mongoose.Schema({
     default: false
   },
 
+  otherCharges: {
+    type: Number,
+    default: 0
+  },
+
+  metadata: {
+    type: Object,
+    default: {}
+  },
+
   paymentMethod: {
     type: String,
     enum: ['cash', 'transfer', 'card', 'check', 'other'],

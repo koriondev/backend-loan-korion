@@ -72,6 +72,7 @@ exports.createLoan = async (req, res) => {
             interestRatePeriodic: 0, // Calculated in schedule generation
             lendingType,
             duration: parsedDuration,
+            initialDuration: parsedDuration,
             frequency,
             frequencyMode,
             startDate: startDate || new Date(),
@@ -175,19 +176,18 @@ exports.createLoan = async (req, res) => {
         }
 
 
-        // Handle initial paid installments (migration support) - ONLY IF APPROVED
         if (newLoan.status === 'active' && initialPaidInstallments > 0) {
             for (let i = 0; i < Math.min(initialPaidInstallments, newLoan.schedule.length); i++) {
                 const inst = newLoan.schedule[i];
                 inst.status = 'paid';
                 inst.paidAmount = inst.amount;
-                inst.paidInterest = inst.interest;
-                inst.paidCapital = inst.capital;
+                inst.interestPaid = inst.interestAmount;
+                inst.capitalPaid = inst.principalAmount;
                 inst.paidDate = new Date(inst.dueDate);
             }
 
             const paidCapital = newLoan.schedule.slice(0, initialPaidInstallments)
-                .reduce((sum, inst) => sum + inst.capital, 0);
+                .reduce((sum, inst) => sum + parseFloat(inst.principalAmount.toString() || 0), 0);
 
             newLoan.currentCapital -= paidCapital;
         }
@@ -387,10 +387,13 @@ exports.registerPayment = async (req, res) => {
                 breakdown: {
                     appliedCapital: distribution.appliedCapital,
                     appliedToCapital: distribution.appliedCapital,
+                    capital: distribution.appliedCapital,
                     appliedInterest: distribution.appliedInterest,
                     appliedToInterest: distribution.appliedInterest,
+                    interest: distribution.appliedInterest,
                     appliedPenalty: distribution.appliedPenalty,
                     appliedToMora: distribution.appliedPenalty,
+                    mora: distribution.appliedPenalty
                 }
             },
             date: paymentDate
@@ -419,6 +422,15 @@ exports.registerPayment = async (req, res) => {
             userId: req.user.id || req.user._id,
             receiptId,
             notes: notes || '',
+            metadata: {
+                breakdown: {
+                    appliedCapital: distribution.appliedCapital,
+                    appliedInterest: distribution.appliedInterest,
+                    appliedPenalty: distribution.appliedPenalty,
+                    mora: distribution.appliedPenalty,
+                    otherCharges: 0
+                }
+            },
             businessId: loan.businessId
         });
 
@@ -692,22 +704,26 @@ exports.applyPenalty = async (req, res) => {
         const amortizationEngineV3 = require('../engines/amortizationEngineV3');
 
         // 2. Calcular monto de la penalidad (Interés de la cuota actual)
-        const penaltyAmount = (currentQuota.interestAmount?.$numberDecimal) ? parseFloat(currentQuota.interestAmount.$numberDecimal) : (parseFloat(currentQuota.interestAmount) || 0);
+        const rawInterestAmount = currentQuota.interestAmount != null ? currentQuota.interestAmount : currentQuota.interest;
+        const rawPrincipalAmount = currentQuota.principalAmount != null ? currentQuota.principalAmount : currentQuota.capital;
+        const penaltyAmount = (rawInterestAmount?.$numberDecimal) ? parseFloat(rawInterestAmount.$numberDecimal) : (parseFloat(rawInterestAmount) || 0);
 
         if (penaltyAmount <= 0) throw new Error("Esta cuota no tiene intereses pendientes para aplicar penalidad");
 
         // 3. Lógica de Desplazamiento (Shift)
         // Guardar montos originales para la nueva cuota final
-        const originalPrincipal = currentQuota.principalAmount;
-        const originalInterest = currentQuota.interestAmount;
+        const originalPrincipal = rawPrincipalAmount;
+        const originalInterest = rawInterestAmount;
 
-        // Marcar cuota actual como pagada (bajo concepto de penalidad)
-        currentQuota.status = 'paid';
-        currentQuota.paidAmount = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
-        currentQuota.interestPaid = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
-        currentQuota.capitalPaid = mongoose.Types.Decimal128.fromString("0.00");
-        currentQuota.paidDate = paymentDate;
-        currentQuota.notes = (currentQuota.notes || "") + " [Penalidad Aplicada]";
+        // CORRECCIÓN: Ajustar el monto de la cuota actual para que no duplique capital en los totales
+        loan.schedule[currentQuotaIndex].principalAmount = mongoose.Types.Decimal128.fromString("0.00");
+        loan.schedule[currentQuotaIndex].amount = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
+        loan.schedule[currentQuotaIndex].interestAmount = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
+        loan.schedule[currentQuotaIndex].paidAmount = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
+        loan.schedule[currentQuotaIndex].interestPaid = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
+        loan.schedule[currentQuotaIndex].status = 'paid';
+        loan.schedule[currentQuotaIndex].paidDate = paymentDate;
+        loan.schedule[currentQuotaIndex].notes = (loan.schedule[currentQuotaIndex].notes || "") + " [Penalidad Aplicada]";
 
         // 4. Rodar fechas de las cuotas futuras
         // Desde la cuota actual + 1 en adelante, sumamos un periodo
@@ -770,7 +786,17 @@ exports.applyPenalty = async (req, res) => {
             wallet: finalWalletId,
             client: loan.clientId,
             date: paymentDate,
-            metadata: { concept: 'penalty_shift', originalQuotaNumber: currentQuota.number }
+            metadata: {
+                concept: 'penalty_shift',
+                originalQuotaNumber: currentQuota.number,
+                breakdown: {
+                    appliedPenalty: penaltyAmount,
+                    appliedToMora: penaltyAmount,
+                    mora: penaltyAmount,
+                    appliedInterest: 0,
+                    appliedCapital: 0
+                }
+            }
         }).save({ session });
 
         // 8. Crear Registro de Pago
@@ -781,18 +807,36 @@ exports.applyPenalty = async (req, res) => {
             date: new Date(),
             amount: penaltyAmount,
             remainingPayment: 0,
-            appliedPenalty: 0,
+            appliedPenalty: penaltyAmount,
             appliedInterest: 0,
             appliedCapital: 0,
-            otherCharges: penaltyAmount, // Nuevo campo o usar notas
+            otherCharges: penaltyAmount,
             paymentMethod: paymentMethod || 'cash',
             walletId: finalWalletId,
             userId: req.user.id || req.user._id,
             receiptId,
             notes: (notes || "") + " [Penalidad Aplicada]",
+            metadata: {
+                concept: 'penalty_shift',
+                breakdown: {
+                    appliedPenalty: penaltyAmount,
+                    mora: penaltyAmount,
+                    appliedInterest: 0,
+                    appliedCapital: 0,
+                    otherCharges: penaltyAmount
+                }
+            },
             businessId: loan.businessId
         });
         await payment.save({ session });
+
+        // 9. Actualizar balance del cliente (Sincronización)
+        const Client = require('../models/Client');
+        await Client.findByIdAndUpdate(
+            loan.clientId,
+            { $inc: { balance: -penaltyAmount } },
+            { session }
+        );
 
         await session.commitTransaction();
         res.json({ success: true, message: "Penalidad aplicada y calendario actualizado", payment });
@@ -833,32 +877,94 @@ exports.deletePaymentV3 = async (req, res) => {
         const { appliedCapital, appliedInterest, appliedPenalty, amount, walletId } = payment;
         const getD = (v) => v && v.$numberDecimal ? parseFloat(v.$numberDecimal) : parseFloat(v || 0);
 
-        // Revertir cuotas pagadas por este pago (de más reciente a más antigua)
-        let remainingToRevert = amount;
-        for (let i = loan.schedule.length - 1; i >= 0 && remainingToRevert > 0; i--) {
-            const q = loan.schedule[i];
-            const paidOnThisQuota = getD(q.paidAmount);
-            if (paidOnThisQuota <= 0) continue;
+        // --- LÓGICA ESPECIAL: REVERTIR GANA TIEMPO (SHIFT) ---
+        const isPenaltyShift = payment.metadata?.concept === 'penalty_shift' || (payment.notes && payment.notes.includes("[Penalidad Aplicada]"));
 
-            const revertAmt = Math.min(paidOnThisQuota, remainingToRevert);
-            const newPaid = Math.max(0, paidOnThisQuota - revertAmt);
-            loan.schedule[i].paidAmount = mongoose.Types.Decimal128.fromString(newPaid.toFixed(2));
+        if (isPenaltyShift) {
+            const amortizationEngineV3 = require('../engines/amortizationEngineV3');
 
-            if (newPaid <= 0) {
-                loan.schedule[i].status = 'pending';
-                loan.schedule[i].paidDate = null;
-                loan.schedule[i].capitalPaid = mongoose.Types.Decimal128.fromString('0.00');
-                loan.schedule[i].interestPaid = mongoose.Types.Decimal128.fromString('0.00');
-            } else {
-                loan.schedule[i].status = 'partial';
+            // 1. Encontrar la cuota que fue penalizada
+            // Coincidencia estricta: Nota + Pagado + Monto exacto
+            let penalizedQuotaIndex = loan.schedule.findIndex(q =>
+                (q.notes && q.notes.includes("[Penalidad Aplicada]")) &&
+                q.status === 'paid' &&
+                Math.abs(getD(q.paidAmount) - amount) < 0.05
+            );
+
+            // Fallback 1: Buscar por nota y monto (independiente del estado)
+            if (penalizedQuotaIndex === -1) {
+                penalizedQuotaIndex = loan.schedule.findIndex(q =>
+                    (q.notes && q.notes.includes("[Penalidad Aplicada]")) &&
+                    Math.abs(getD(q.amount) - amount) < 0.05
+                );
             }
-            remainingToRevert -= revertAmt;
+
+            // Fallback 2: Buscar cualquier cuota que tenga la marca de penalidad
+            if (penalizedQuotaIndex === -1) {
+                penalizedQuotaIndex = loan.schedule.findIndex(q =>
+                    (q.notes && q.notes.includes("[Penalidad Aplicada]"))
+                );
+            }
+
+            if (penalizedQuotaIndex !== -1) {
+                // 2. Recuperar montos originales de la última cuota (la que se agregó al final)
+                const lastQuota = loan.schedule[loan.schedule.length - 1];
+
+                loan.schedule[penalizedQuotaIndex].principalAmount = lastQuota.principalAmount;
+                loan.schedule[penalizedQuotaIndex].interestAmount = lastQuota.interestAmount;
+                loan.schedule[penalizedQuotaIndex].amount = lastQuota.amount;
+                loan.schedule[penalizedQuotaIndex].status = 'pending';
+                loan.schedule[penalizedQuotaIndex].paidAmount = mongoose.Types.Decimal128.fromString("0.00");
+                loan.schedule[penalizedQuotaIndex].interestPaid = mongoose.Types.Decimal128.fromString("0.00");
+                loan.schedule[penalizedQuotaIndex].paidDate = null;
+                // Limpiar la nota de penalidad de forma conservadora
+                if (loan.schedule[penalizedQuotaIndex].notes) {
+                    loan.schedule[penalizedQuotaIndex].notes = loan.schedule[penalizedQuotaIndex].notes.replace(" [Penalidad Aplicada]", "").trim();
+                }
+
+                // 3. Eliminar la última cuota (que era el desplazamiento)
+                loan.schedule.pop();
+
+                // 4. Desplazar fechas hacia atrás
+                for (let i = penalizedQuotaIndex + 1; i < loan.schedule.length; i++) {
+                    loan.schedule[i].dueDate = amortizationEngineV3.getPrevDueDate(loan.schedule[i].dueDate, loan.frequency);
+                }
+
+                // 5. Ajustar métricas financieras
+                loan.duration = Math.max(0, loan.duration - 1);
+                loan.financialModel = loan.financialModel || {};
+                loan.financialModel.interestTotal = Math.max(0, (loan.financialModel.interestTotal || 0) - amount);
+                loan.financialModel.interestPaid = Math.max(0, (loan.financialModel.interestPaid || 0) - amount);
+            }
+        } else {
+            // --- LÓGICA REGULAR: REVERTIR PAGOS DE CAPITAL/INTERÉS ---
+            let remainingToRevert = amount;
+            for (let i = loan.schedule.length - 1; i >= 0 && remainingToRevert > 0; i--) {
+                const q = loan.schedule[i];
+                const paidOnThisQuota = getD(q.paidAmount);
+                if (paidOnThisQuota <= 0) continue;
+
+                const revertAmt = Math.min(paidOnThisQuota, remainingToRevert);
+                const newPaid = Math.max(0, paidOnThisQuota - revertAmt);
+                loan.schedule[i].paidAmount = mongoose.Types.Decimal128.fromString(newPaid.toFixed(2));
+
+                if (newPaid <= 0) {
+                    loan.schedule[i].status = 'pending';
+                    loan.schedule[i].paidDate = null;
+                    loan.schedule[i].capitalPaid = mongoose.Types.Decimal128.fromString('0.00');
+                    loan.schedule[i].interestPaid = mongoose.Types.Decimal128.fromString('0.00');
+                } else {
+                    loan.schedule[i].status = 'partial';
+                }
+                remainingToRevert -= revertAmt;
+            }
+
+            // Restaurar métricas financieras para pagos regulares
+            loan.financialModel = loan.financialModel || {};
+            loan.financialModel.interestPaid = Math.max(0, getD(loan.financialModel.interestPaid) - appliedInterest);
+            loan.currentCapital = Math.min(getD(loan.amount), getD(loan.currentCapital) + appliedCapital);
         }
 
-        // Restaurar métricas financieras
-        loan.financialModel = loan.financialModel || {};
-        loan.financialModel.interestPaid = Math.max(0, getD(loan.financialModel.interestPaid) - appliedInterest);
-        loan.currentCapital = Math.min(getD(loan.amount), getD(loan.currentCapital) + appliedCapital);
         if (loan.penaltyConfig) {
             loan.penaltyConfig.paidPenalty = Math.max(0, getD(loan.penaltyConfig.paidPenalty) - appliedPenalty);
         }
