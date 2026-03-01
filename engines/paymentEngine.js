@@ -8,7 +8,12 @@ const mongoose = require('mongoose');
 
 const legacyPaymentEngine = require('./legacyPaymentEngine');
 
-const getVal = (v) => (v && typeof v.toString === 'function' && v.constructor.name === 'Decimal128') ? parseFloat(v.toString()) : (parseFloat(v) || 0);
+const getVal = (v) => {
+    if (v === null || v === undefined) return 0;
+    if (typeof v === 'object' && v.$numberDecimal) return parseFloat(v.$numberDecimal);
+    if (typeof v === 'object' && v.constructor.name === 'Decimal128') return parseFloat(v.toString());
+    return parseFloat(v) || 0;
+};
 const toDecimal = (v) => mongoose.Types.Decimal128.fromString(parseFloat(v).toFixed(2));
 
 const distributePaymentV3 = (loan, amount, currentPenalty) => {

@@ -9,6 +9,13 @@ const { calculatePenaltyV3 } = require('../engines/penaltyEngine');
 const { distributePayment, applyPaymentToLoan, validatePaymentAmount } = require('../engines/paymentEngine');
 const financeController = require('./financeController');
 
+const getVal = (v) => {
+    if (v === null || v === undefined) return 0;
+    if (typeof v === 'object' && v.$numberDecimal) return parseFloat(v.$numberDecimal);
+    if (typeof v === 'object' && v.constructor.name === 'Decimal128') return parseFloat(v.toString());
+    return parseFloat(v) || 0;
+};
+
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  * CREATE LOAN
@@ -192,7 +199,6 @@ exports.createLoan = async (req, res) => {
             newLoan.currentCapital -= paidCapital;
         }
 
-        // Save loan
         await newLoan.save({ session });
 
         // Update client balance - ONLY IF APPROVED (Or wait?) 
@@ -241,7 +247,11 @@ exports.createLoan = async (req, res) => {
  */
 exports.getLoans = async (req, res) => {
     try {
-        const loans = await Loan.find({ businessId: req.user.businessId })
+        const businessIdStr = req.user.businessId;
+        const businessId = new mongoose.Types.ObjectId(businessIdStr);
+        const bizFilter = { businessId: { $in: [businessId, businessIdStr] } };
+
+        const loans = await Loan.find(bizFilter)
             .populate('clientId', 'name cedula phone')
             .sort({ createdAt: -1 });
 
@@ -251,7 +261,7 @@ exports.getLoans = async (req, res) => {
         const enrichedLoans = loans.map(loan => {
             const penaltyData = calculatePenaltyV3(loan, settings);
             // Safety check for loan.penaltyConfig before accessing paidPenalty
-            const paidPenaltyVal = parseFloat(loan.penaltyConfig?.paidPenalty?.toString() || '0') || 0;
+            const paidPenaltyVal = getVal(loan.penaltyConfig?.paidPenalty);
             const pendingPenalty = Math.max(0, penaltyData.totalPenalty - paidPenaltyVal);
 
             return {
@@ -286,7 +296,7 @@ exports.getLoanById = async (req, res) => {
         const settings = await Settings.findOne({ businessId: loan.businessId });
         const penaltyData = calculatePenaltyV3(loan, settings);
         // Safety check for loan.penaltyConfig before accessing paidPenalty
-        const paidPenaltyVal = parseFloat(loan.penaltyConfig?.paidPenalty?.toString() || '0') || 0;
+        const paidPenaltyVal = getVal(loan.penaltyConfig?.paidPenalty);
         const pendingPenalty = Math.max(0, penaltyData.totalPenalty - paidPenaltyVal);
 
         res.json({
@@ -449,7 +459,7 @@ exports.registerPayment = async (req, res) => {
             newLoanStatus: {
                 status: loan.status,
                 currentCapital: loan.currentCapital,
-                pendingPenalty: Math.max(0, (penaltyData?.totalPenalty || 0) - (parseFloat(loan.penaltyConfig?.paidPenalty?.toString() || '0') || 0))
+                pendingPenalty: Math.max(0, (penaltyData?.totalPenalty || 0) - getVal(loan.penaltyConfig?.paidPenalty))
             }
         });
 
@@ -529,7 +539,7 @@ exports.previewLoan = async (req, res) => {
         const effectiveRate = interestRateMonthly || interestRate;
 
         // Generate schedule V3
-        const { schedule, summary } = generateScheduleV3({
+        const result = generateScheduleV3({
             amount: parseFloat(amount),
             interestRateMonthly: parseFloat(effectiveRate),
             duration: parseInt(duration),
@@ -540,13 +550,14 @@ exports.previewLoan = async (req, res) => {
             firstPaymentDate: firstPaymentDate || new Date()
         });
 
-        console.log("SCHEDULE GENERATED, FIRST ITEM:", schedule[0]);
+        console.log("SCHEDULE GENERATED, FIRST ITEM:", result.schedule[0]);
 
         res.json({
-            schedule,
+            schedule: result.schedule,
             finalAmount: amount,
             finalRate: interestRateMonthly || interestRate,
-            totalToPay: summary.totalToPay
+            totalToPay: result.totalToPay,
+            totalInterest: result.totalInterest
         });
 
     } catch (error) {
@@ -708,9 +719,6 @@ exports.applyPenalty = async (req, res) => {
 
         const loan = await Loan.findById(id).populate('clientId').session(session);
         if (!loan) throw new Error("Préstamo no encontrado");
-
-        // Safety extraction helper
-        const getVal = (v) => (v && typeof v.toString === 'function' && v.constructor.name === 'Decimal128') ? parseFloat(v.toString()) : (parseFloat(v) || 0);
 
         // 1. Encontrar la primera cuota pendiente o parcial
         const currentQuotaIndex = loan.schedule.findIndex(q => q.status === 'pending' || q.status === 'partial');
@@ -1048,6 +1056,8 @@ exports.getArrears = async (req, res) => {
         }).populate('clientId', 'name phone cedula address');
 
         const arrearsList = [];
+        const penaltyEngine = require('../engines/penaltyEngine');
+
 
         loans.forEach(loan => {
             const overdueInstallments = (loan.schedule || []).filter(inst =>
@@ -1055,15 +1065,20 @@ exports.getArrears = async (req, res) => {
             );
 
             if (overdueInstallments.length > 0) {
-                const totalOverdue = overdueInstallments.reduce((sum, inst) => {
-                    const amt = inst.amount && inst.amount.toString ? parseFloat(inst.amount.toString()) : (parseFloat(inst.amount) || 0);
-                    const paid = inst.paidAmount && inst.paidAmount.toString ? parseFloat(inst.paidAmount.toString()) : (parseFloat(inst.paidAmount) || 0);
-                    return sum + (amt - paid);
-                }, 0);
+                // EXPLICIT SUM of components to avoid 'amount' field inconsistencies
+                const overdueCapital = overdueInstallments.reduce((sum, inst) => sum + (getVal(inst.principalAmount || inst.capital) - getVal(inst.capitalPaid || 0)), 0);
+                const overdueInterest = overdueInstallments.reduce((sum, inst) => sum + (getVal(inst.interestAmount || inst.interest) - getVal(inst.interestPaid || 0)), 0);
+
+                // Penalty Calculation (Mora)
+                const penaltyResult = penaltyEngine.calculatePenaltyV3(loan, null, today);
+                const pendingPenalty = Math.max(0, penaltyResult.totalPenalty - getVal(loan.penaltyConfig?.paidPenalty));
+
+                const totalOverdue = overdueCapital + overdueInterest + pendingPenalty;
 
                 const firstOverdue = overdueInstallments[0];
-                const diffTime = Math.abs(today - new Date(firstOverdue.dueDate));
-                const daysLate = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                const d1 = new Date(today); d1.setHours(0, 0, 0, 0);
+                const d2 = new Date(firstOverdue.dueDate); d2.setHours(0, 0, 0, 0);
+                const daysLate = Math.round(Math.abs(d1 - d2) / (1000 * 60 * 60 * 24));
 
                 arrearsList.push({
                     ...loan.toObject(),
@@ -1074,11 +1089,14 @@ exports.getArrears = async (req, res) => {
                     balance: loan.realBalance || loan.balance,
                     currentCapital: loan.currentCapital || (loan.realBalance || loan.balance),
                     currency: loan.currency || 'DOP',
-                    installmentsCount: overdueInstallments.length, // Mostrar solo las vencidas
+                    installmentsCount: overdueInstallments.length,
                     overdueCount: overdueInstallments.length,
                     totalOverdue: totalOverdue,
+                    overdueCapital,
+                    overdueInterest,
+                    pendingPenalty,
                     nextDueDate: overdueInstallments[0].dueDate,
-                    daysLate: daysLate, // Cálculo dinámico
+                    daysLate: daysLate,
                     status: loan.status,
                     frequency: loan.frequency,
                     schedule: loan.schedule,
@@ -1087,6 +1105,7 @@ exports.getArrears = async (req, res) => {
             }
         });
 
+        // Ordenar por total de deuda (incluyendo mora)
         arrearsList.sort((a, b) => b.totalOverdue - a.totalOverdue);
         res.json(arrearsList);
 

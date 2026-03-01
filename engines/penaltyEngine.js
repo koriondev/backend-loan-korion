@@ -6,7 +6,12 @@ const { isWorkingDay } = require('./amortizationEngine'); // We'll export it fro
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
-const getVal = (v) => (v && typeof v.toString === 'function' && v.constructor.name === 'Decimal128') ? parseFloat(v.toString()) : (parseFloat(v) || 0);
+const getVal = (v) => {
+    if (v === null || v === undefined) return 0;
+    if (typeof v === 'object' && v.$numberDecimal) return parseFloat(v.$numberDecimal);
+    if (typeof v === 'object' && v.constructor.name === 'Decimal128') return parseFloat(v.toString());
+    return parseFloat(v) || 0;
+};
 
 const legacyEngine = require('./legacyPenaltyEngine');
 
