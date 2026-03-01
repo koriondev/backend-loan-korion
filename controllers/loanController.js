@@ -95,12 +95,12 @@ exports.createLoan = async (req, res) => {
             revenueShare: req.body.revenueShare,
 
             status: 'active', // Will be updated below
-            penaltyConfig: penaltyConfig || {
+            penaltyConfig: penaltyConfig || settings?.defaultPenaltyConfig || {
                 type: 'fixed',
                 value: 0,
                 gracePeriod: 0,
                 periodMode: 'daily',
-                applyPerInstallment: true,
+                applyPerInstallment: false,
                 applyOncePerPeriod: false,
                 applyOn: 'quota',
                 maxPenalty: null,
@@ -1058,6 +1058,7 @@ exports.getArrears = async (req, res) => {
         const today = new Date();
         today.setHours(23, 59, 59, 999);
 
+        const settings = await Settings.findOne({ businessId });
         const loans = await Loan.find({
             ...bizFilter,
             status: { $in: ['active', 'past_due'] }
@@ -1085,12 +1086,13 @@ exports.getArrears = async (req, res) => {
                     return sum + Math.max(0, interest - intPaid);
                 }, 0);
 
-                // La mora acumulada se calcula en el payment engine al momento del pago.
-                // Para el display de atrasos, mostramos solo capital + interés vencido no pagado.
-                // Esto evita que el motor de penalidad infle la deuda con acumulaciones exponenciales
-                // (por ejemplo: $100/semana × 10 semanas × 11 cuotas = $11,000 de mora ficticia).
-                const pendingPenalty = 0; // La mora se aplica al pagar, no al listar
-                const totalOverdue = overdueCapital + overdueInterest;
+                // Calcular mora re-activado: ya que ahora la configuración global de mora y applyPerInstallment
+                // previenen la inflación artificial exponencial.
+                const penaltyData = calculatePenaltyV3(loan, settings, today);
+                const paidPenalty = getVal(loan.penaltyConfig?.paidPenalty || 0);
+                const pendingPenalty = Math.max(0, penaltyData.totalPenalty - paidPenalty);
+
+                const totalOverdue = overdueCapital + overdueInterest + pendingPenalty;
 
                 const firstOverdue = overdueInstallments[0];
                 const d1 = new Date(today); d1.setHours(0, 0, 0, 0);
