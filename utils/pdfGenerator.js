@@ -70,9 +70,9 @@ exports.generateReceiptPDF = (transaction, client, loan, settings) => {
             doc.moveDown(0.5);
 
             // --- LOAN INFO ---
-            const loanIdClean = loan._id.toString().slice(-6).toUpperCase();
-            const paidQuotas = loan.schedule.filter(q => q.status === 'paid').length;
-            const totalQuotas = loan.schedule.length;
+            const loanIdClean = loan._id ? loan._id.toString().slice(-6).toUpperCase() : 'N/A';
+            const paidQuotas = (loan.schedule || []).filter(q => q.status === 'paid').length;
+            const totalQuotas = (loan.schedule || []).length;
 
             doc.text(`Prest: ${loanIdClean}`, { align: 'center' });
             doc.text(`Fecha: ${new Date(transaction.date).toLocaleString('es-DO')}`, { align: 'center' });
@@ -85,7 +85,7 @@ exports.generateReceiptPDF = (transaction, client, loan, settings) => {
 
             // --- BALANCES ---
             const montoPagado = Number(transaction.amount);
-            const saldoFinal = loan.balance;
+            const saldoFinal = loan.balance != null ? loan.balance : (loan.currentCapital != null ? loan.currentCapital : 0);
             const saldoInicial = saldoFinal + montoPagado;
 
             row("S. Inicial:", formatCurrency(saldoInicial));
