@@ -157,16 +157,20 @@ const calculatePercentPenaltyV3 = (loan, settings, referenceDate = null) => {
 };
 
 const getOverduePeriods = (dueDate, periodMode, gracePeriod, settings, refDay = null) => {
-    const startOfToday = refDay || new Date();
-    if (!refDay) startOfToday.setHours(0, 0, 0, 0);
+    // Para evitar desfases de Zona Horaria (UTC vs Local) que causan diferencias de 1 día:
+    const normalizeDate = (d) => {
+        const dObj = new Date(d);
+        return new Date(Date.UTC(dObj.getFullYear(), dObj.getMonth(), dObj.getDate(), 12, 0, 0, 0));
+    };
 
-    const graceDeadline = new Date(dueDate);
-    graceDeadline.setDate(graceDeadline.getDate() + gracePeriod);
+    const startOfToday = normalizeDate(refDay || new Date());
+    const graceDeadline = normalizeDate(dueDate);
+    graceDeadline.setUTCDate(graceDeadline.getUTCDate() + gracePeriod);
 
     if (startOfToday <= graceDeadline) return 0;
 
-    const diffTime = Math.abs(startOfToday - graceDeadline);
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    const diffTime = Math.abs(startOfToday.getTime() - graceDeadline.getTime());
+    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24)); // Usar round sobre horas absolutas
 
     switch (periodMode) {
         case 'daily': return diffDays;
