@@ -1064,7 +1064,6 @@ exports.getArrears = async (req, res) => {
         }).populate('clientId', 'name phone cedula address');
 
         const arrearsList = [];
-        const penaltyEngine = require('../engines/penaltyEngine');
 
 
         loans.forEach(loan => {
@@ -1073,15 +1072,25 @@ exports.getArrears = async (req, res) => {
             );
 
             if (overdueInstallments.length > 0) {
-                // EXPLICIT SUM of components to avoid 'amount' field inconsistencies
-                const overdueCapital = overdueInstallments.reduce((sum, inst) => sum + (getVal(inst.principalAmount || inst.capital) - getVal(inst.capitalPaid || 0)), 0);
-                const overdueInterest = overdueInstallments.reduce((sum, inst) => sum + (getVal(inst.interestAmount || inst.interest) - getVal(inst.interestPaid || 0)), 0);
+                // Suma de capital e interés PENDIENTE de cuotas vencidas (lo que realmente se debe)
+                const overdueCapital = overdueInstallments.reduce((sum, inst) => {
+                    const cap = getVal(inst.principalAmount != null ? inst.principalAmount : inst.capital);
+                    const capPaid = getVal(inst.capitalPaid || 0);
+                    return sum + Math.max(0, cap - capPaid);
+                }, 0);
 
-                // Penalty Calculation (Mora)
-                const penaltyResult = penaltyEngine.calculatePenaltyV3(loan, null, today);
-                const pendingPenalty = Math.max(0, penaltyResult.totalPenalty - getVal(loan.penaltyConfig?.paidPenalty));
+                const overdueInterest = overdueInstallments.reduce((sum, inst) => {
+                    const interest = getVal(inst.interestAmount != null ? inst.interestAmount : inst.interest);
+                    const intPaid = getVal(inst.interestPaid || 0);
+                    return sum + Math.max(0, interest - intPaid);
+                }, 0);
 
-                const totalOverdue = overdueCapital + overdueInterest + pendingPenalty;
+                // La mora acumulada se calcula en el payment engine al momento del pago.
+                // Para el display de atrasos, mostramos solo capital + interés vencido no pagado.
+                // Esto evita que el motor de penalidad infle la deuda con acumulaciones exponenciales
+                // (por ejemplo: $100/semana × 10 semanas × 11 cuotas = $11,000 de mora ficticia).
+                const pendingPenalty = 0; // La mora se aplica al pagar, no al listar
+                const totalOverdue = overdueCapital + overdueInterest;
 
                 const firstOverdue = overdueInstallments[0];
                 const d1 = new Date(today); d1.setHours(0, 0, 0, 0);
