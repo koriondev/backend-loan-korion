@@ -66,8 +66,6 @@ exports.distributePaymentV3 = (loan, amount, currentPenalty) => {
         }
 
         // Determine new status
-        const rawInterestTotal = inst.interestAmount != null ? inst.interestAmount : inst.interest;
-        const rawCapitalTotal = inst.principalAmount != null ? inst.principalAmount : inst.capital;
         const totalInterestPaid = getVal(inst.interestPaid) + installmentUpdate.interestPaid;
         const totalCapitalPaid = getVal(inst.capitalPaid) + installmentUpdate.capitalPaid;
 
