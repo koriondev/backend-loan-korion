@@ -1,3 +1,11 @@
+console.log("DEBUG: loanController.js loading...");
+function getVal(v) {
+    if (v === null || v === undefined) return 0;
+    if (typeof v === 'object' && v.$numberDecimal) return parseFloat(v.$numberDecimal);
+    if (typeof v === 'object' && v.constructor.name === 'Decimal128') return parseFloat(v.toString());
+    return parseFloat(v) || 0;
+}
+
 const mongoose = require('mongoose');
 const Loan = require('../models/Loan');
 const PaymentV2 = require('../models/PaymentV2');
@@ -8,13 +16,6 @@ const { generateScheduleV3 } = require('../engines/amortizationEngine');
 const { calculatePenaltyV3 } = require('../engines/penaltyEngine');
 const { distributePayment, applyPaymentToLoan, validatePaymentAmount } = require('../engines/paymentEngine');
 const financeController = require('./financeController');
-
-const getVal = (v) => {
-    if (v === null || v === undefined) return 0;
-    if (typeof v === 'object' && v.$numberDecimal) return parseFloat(v.$numberDecimal);
-    if (typeof v === 'object' && v.constructor.name === 'Decimal128') return parseFloat(v.toString());
-    return parseFloat(v) || 0;
-};
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -246,6 +247,14 @@ exports.createLoan = async (req, res) => {
  * ═══════════════════════════════════════════════════════════════════════════
  */
 exports.getLoans = async (req, res) => {
+    // Local helper for maximum safety against scope/reference errors
+    const getValInternal = (v) => {
+        if (v === null || v === undefined) return 0;
+        if (typeof v === 'object' && v.$numberDecimal) return parseFloat(v.$numberDecimal);
+        if (typeof v === 'object' && v.constructor.name === 'Decimal128') return parseFloat(v.toString());
+        return parseFloat(v) || 0;
+    };
+
     try {
         const businessIdStr = req.user.businessId;
         const businessId = new mongoose.Types.ObjectId(businessIdStr);
@@ -260,14 +269,13 @@ exports.getLoans = async (req, res) => {
         // Enrich with calculated penalty V3
         const enrichedLoans = loans.map(loan => {
             const penaltyData = calculatePenaltyV3(loan, settings);
-            // Safety check for loan.penaltyConfig before accessing paidPenalty
-            const paidPenaltyVal = getVal(loan.penaltyConfig?.paidPenalty);
-            const pendingPenalty = Math.max(0, penaltyData.totalPenalty - paidPenaltyVal);
+            const paidPenaltyVal = getValInternal(loan.penaltyConfig?.paidPenalty);
+            const pendingPenalty = Math.max(0, (penaltyData?.totalPenalty || 0) - paidPenaltyVal);
 
             return {
                 ...loan.toObject(),
                 currentPenalty: pendingPenalty,
-                penaltyPeriodsOverdue: penaltyData.periodsOverdue
+                penaltyPeriodsOverdue: penaltyData?.periodsOverdue || 0
             };
         });
 
