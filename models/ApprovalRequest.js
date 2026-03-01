@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const ApprovalRequestSchema = new mongoose.Schema({
     loanId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'LoanV2',
+        ref: 'Loan',
         required: true
     },
     requesterId: {

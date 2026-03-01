@@ -110,18 +110,22 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// 4. ELIMINAR USUARIO
+// 4. ELIMINAR USUARIO (BORRADO LÓGICO)
 router.delete('/:id', async (req, res) => {
   try {
-    // Asegurar que solo borro usuarios de MI empresa
+    // Asegurar que solo afecto usuarios de MI empresa
     const userToDelete = await User.findOne({ _id: req.params.id, ...req.businessFilter });
 
     if (!userToDelete) {
       return res.status(404).json({ message: "Usuario no encontrado o no tienes permiso." });
     }
 
-    await User.findByIdAndDelete(req.params.id);
-    res.json({ message: "Usuario eliminado" });
+    // Borrado Lógico (SaaS Compliance)
+    userToDelete.isActive = false;
+    userToDelete.status = 'suspended';
+    await userToDelete.save();
+
+    res.json({ message: "Usuario desactivado correctamente (Historial preservado)" });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -8,7 +8,7 @@ const UserSchema = new mongoose.Schema({
   // Nuevo Rol 'ti' (Super Admin)
   role: {
     type: String,
-    enum: ['ti', 'admin', 'collector', 'secretary', 'manager', 'investor'],
+    enum: ['ti', 'superadmin', 'admin', 'collector', 'secretary', 'manager', 'investor'],
     default: 'collector'
   },
   defaultSharePercentage: { type: Number, default: 0 },

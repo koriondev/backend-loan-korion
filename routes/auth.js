@@ -41,7 +41,8 @@ router.post('/register', async (req, res) => {
     await newUser.save();
     res.json({ message: "Usuario creado con éxito", status: initialStatus });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[AUTH EVENT] Error in /register:', error);
+    res.status(500).json({ error: "No se pudo procesar el registro en este momento." });
   }
 });
 
@@ -75,7 +76,8 @@ router.post('/pre-login', async (req, res) => {
       activationToken // Se usará en el siguiente paso para /activate
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[AUTH EVENT] Error in /pre-login:', error);
+    res.status(500).json({ error: "Error al verificar el estado de la cuenta." });
   }
 });
 
@@ -124,7 +126,8 @@ router.post('/activate', async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[AUTH EVENT] Error in /activate:', error);
+    res.status(500).json({ error: "No se pudo activar la cuenta. Intente más tarde." });
   }
 });
 
@@ -134,18 +137,26 @@ router.post('/login', async (req, res) => {
     const { email, password } = req.body;
 
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ message: "Usuario no encontrado" });
+    const genericError = "Credenciales inválidas";
+
+    if (!user) {
+      console.warn(`[AUTH EVENT] Login attempt with non-existent email: ${email}`);
+      return res.status(401).json({ message: genericError });
+    }
 
     if (user.status === 'pending_activation') {
-      return res.status(400).json({ message: "Esta cuenta aún no ha sido activada. Por favor, inicia el flujo de activación." });
+      return res.status(403).json({ message: "La cuenta requiere activación inicial." });
     }
 
     if (user.status === 'suspended' || !user.isActive) {
-      return res.status(403).json({ message: "Cuenta suspendida. Contacta al administrador." });
+      return res.status(403).json({ message: "Acceso restringido. Contacte a soporte." });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: "Contraseña incorrecta" });
+    if (!isMatch) {
+      console.warn(`[AUTH EVENT] Invalid password for: ${email}`);
+      return res.status(401).json({ message: genericError });
+    }
 
     // Crear Token
     const token = jwt.sign(
@@ -186,7 +197,8 @@ router.post('/login', async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[AUTH EVENT] Critical Login Error:', error);
+    res.status(500).json({ error: "Error interno durante la autenticación." });
   }
 });
 
@@ -214,7 +226,8 @@ router.get('/me', authMiddleware, async (req, res) => {
       modulePermissions: business?.modulePermissions || []
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[AUTH EVENT] Error in /me:', error);
+    res.status(500).json({ error: "No se pudo recuperar la sesión." });
   }
 });
 

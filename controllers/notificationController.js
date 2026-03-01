@@ -77,13 +77,15 @@ exports.getNotifications = async (req, res) => {
         today.setHours(0, 0, 0, 0);
 
         // Find active loans
-        const activeLoans = await Loan.find({ businessId, status: 'active' }).populate('client');
+        const activeLoans = await Loan.find({ businessId, status: 'active' }).populate('clientId');
 
         for (const loan of activeLoans) {
-            const nextQuota = loan.schedule.find(q => q.status === 'pending');
-            if (!nextQuota) continue;
+            const nextQuota = (loan.schedule || []).find(q => q.status === 'pending');
+            if (!nextQuota || !nextQuota.dueDate) continue;
 
             const dueDate = new Date(nextQuota.dueDate);
+            if (isNaN(dueDate.getTime())) continue; // Skip if invalid date
+
             const dueDateStr = dueDate.toISOString().split('T')[0];
             const todayStr = today.toISOString().split('T')[0];
 
@@ -101,7 +103,7 @@ exports.getNotifications = async (req, res) => {
                     await exports.createNotification(
                         businessId,
                         'payment_due',
-                        `El préstamo de ${maskName(loan.client.name)} vence hoy.`,
+                        `El préstamo de ${maskName(loan.clientId?.name)} vence hoy.`,
                         loan._id
                     );
                 }
@@ -121,7 +123,7 @@ exports.getNotifications = async (req, res) => {
                     await exports.createNotification(
                         businessId,
                         'overdue',
-                        `El préstamo de ${maskName(loan.client.name)} está atrasado.`,
+                        `El préstamo de ${maskName(loan.clientId?.name)} está atrasado.`,
                         loan._id
                     );
                 }
@@ -192,7 +194,7 @@ exports.sendSummary = async (businessId) => {
         const paymentsCount = paymentNotifs.length;
 
         // 2. Préstamos en Atraso (Total)
-        const overdueLoans = await Loan.find({ businessId, status: 'active' }).populate('client');
+        const overdueLoans = await Loan.find({ businessId, status: 'active' }).populate('clientId');
         let overdueCount = 0;
         let overdueList = [];
 
@@ -200,14 +202,14 @@ exports.sendSummary = async (businessId) => {
             const nextQuota = loan.schedule.find(q => q.status === 'pending');
             if (nextQuota && new Date(nextQuota.dueDate) < today) {
                 overdueCount++;
-                if (overdueList.length < 5) overdueList.push(`${loan.client.name} ($${nextQuota.amount})`);
+                if (overdueList.length < 5) overdueList.push(`${loan.clientId?.name || 'Cliente'} ($${nextQuota.amount})`);
             }
         }
 
         // 3. Cuotas para Hoy (Pendientes)
         let dueTodayCount = 0;
         for (const loan of overdueLoans) {
-            const nextQuota = loan.schedule.find(q => q.status === 'pending');
+            const nextQuota = (loan.schedule || []).find(q => q.status === 'pending');
             if (nextQuota) {
                 const dueStr = new Date(nextQuota.dueDate).toISOString().split('T')[0];
                 const todayStr = today.toISOString().split('T')[0];

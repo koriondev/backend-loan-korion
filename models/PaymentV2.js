@@ -6,7 +6,7 @@ const PaymentV2Schema = new mongoose.Schema({
   // ─────────────────────────────────────────────────────────────────────────
   loanId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'LoanV2',
+    ref: 'Loan',
     required: true
   },
 

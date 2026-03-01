@@ -28,8 +28,11 @@ exports.checkSubscription = async (req, res, next) => {
             }
         }
 
-        // Verificar Expiración de Licencia Normal
-        if (business.status === 'expired' || (business.licenseExpiresAt && now > business.licenseExpiresAt)) {
+        // Prioridad: Fecha de Expiración > Status
+        const isExpiredByDate = (business.licenseExpiresAt && now > business.licenseExpiresAt);
+        const isExpiredByStatus = (business.status === 'expired');
+
+        if (isExpiredByStatus || isExpiredByDate) {
             return res.status(403).json({
                 error: "Tu suscripción ha expirado. Por favor, realiza el pago para continuar.",
                 code: "EXPIRATION_LICENSE"
@@ -37,13 +40,14 @@ exports.checkSubscription = async (req, res, next) => {
         }
 
         if (business.status === 'suspended') {
-            return res.status(403).json({ error: "Cuenta suspendida." });
+            return res.status(403).json({ error: "Cuenta suspendida o inhabilitada temporalmente." });
         }
 
         req.businessData = business; // Guardar para uso posterior
         next();
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('❌ [SUBSCRIPTION] Error checkSubscription:', error);
+        res.status(500).json({ error: "Error al validar la suscripción." });
     }
 };
 
@@ -63,7 +67,8 @@ exports.checkClientLimit = async (req, res, next) => {
         }
         next();
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('❌ [SUBSCRIPTION] Error checkClientLimit:', error);
+        res.status(500).json({ error: "Error al verificar límites de clientes." });
     }
 };
 
@@ -87,7 +92,8 @@ exports.checkLoanLimit = async (req, res, next) => {
         }
         next();
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('❌ [SUBSCRIPTION] Error checkLoanLimit:', error);
+        res.status(500).json({ error: "Error al verificar límites de préstamos." });
     }
 };
 
@@ -109,7 +115,8 @@ exports.checkModuleAccess = (moduleName) => {
             }
             next();
         } catch (error) {
-            res.status(500).json({ error: error.message });
+            console.error('❌ [SUBSCRIPTION] Error checkModuleAccess:', error);
+            res.status(500).json({ error: "Error al validar acceso a módulos." });
         }
     };
 };

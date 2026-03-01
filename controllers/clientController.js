@@ -69,7 +69,7 @@ exports.createClient = async (req, res) => {
     res.status(201).json(savedClient);
   } catch (error) {
     console.error('Error creating client:', error);
-    res.status(400).json({ error: error.message });
+    res.status(500).json({ error: "Error al crear el cliente." });
   }
 };
 /** 2. OBTENER CLIENTES (Filtrado por Negocio)
@@ -100,8 +100,8 @@ exports.getClients = async (req, res) => {
 
     res.json(clients);
   } catch (error) {
-    console.error("❌ Error fatal:", error);
-    res.status(500).json({ error: error.message });
+    console.error("❌ [CLIENTS] Error recuperando lista:", error);
+    res.status(500).json({ error: "Error al cargar la lista de clientes." });
   }
 };
 
@@ -122,8 +122,8 @@ exports.getClientProfile = async (req, res) => {
     // Cargar también V2 si existen para el cliente
     let mappedV2 = [];
     try {
-      const LoanV2 = require('../models/LoanV2');
-      const loansV2 = await LoanV2.find({ clientId: id }).sort({ createdAt: -1 });
+      const Loan = require('../models/Loan');
+      const loansV2 = await Loan.find({ clientId: id }).sort({ createdAt: -1 });
       mappedV2 = loansV2.map(l => {
         const obj = l.toObject();
         return {
@@ -169,8 +169,10 @@ exports.getClientProfile = async (req, res) => {
       loans: loans
     });
 
+
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("❌ [CLIENTS] Error recuperando perfil:", error);
+    res.status(500).json({ error: "Error al cargar el perfil del cliente." });
   }
 };
 
@@ -231,8 +233,8 @@ exports.updateClient = async (req, res) => {
 
     res.json(updated);
   } catch (error) {
-    console.error('Error updating client:', error);
-    res.status(500).json({ error: error.message });
+    console.error('❌ [CLIENTS] Error actualizando cliente:', error);
+    res.status(500).json({ error: "No se pudo actualizar la información del cliente." });
   }
 };
 
@@ -247,6 +249,7 @@ exports.deleteClient = async (req, res) => {
     await Client.findByIdAndDelete(req.params.id);
     res.json({ message: "Cliente eliminado correctamente" });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('❌ [CLIENTS] Error eliminando cliente:', error);
+    res.status(500).json({ error: "Error interno al intentar eliminar el cliente." });
   }
 };

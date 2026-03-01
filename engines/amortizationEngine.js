@@ -1,309 +1,206 @@
+const { RRule } = require('rrule');
+const Holidays = require('date-holidays');
+const mongoose = require('mongoose');
+
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * AMORTIZATION ENGINE
+ * AMORTIZATION ENGINE V3 (Financial Precision & RD Compliance)
  * ═══════════════════════════════════════════════════════════════════════════
- * 
- * Generates amortization schedules for different loan types.
- * Supports: Redito, Fixed, Amortization (Banking)
  */
 
-const { generateDueDates } = require('./frequencyEngine');
+const hd = new Holidays('DO');
 
 /**
- * Round to nearest 5
- * @param {Number} num - Number to round
- * @returns {Number} Rounded number
+ * Checks if a date is a holiday or weekend in Dominican Republic.
+ * Includes Law 139-97 logic (implicit in date-holidays 'DO' config usually).
  */
-const roundToNearestFive = (num) => Math.round(num / 5) * 5;
+const isNonWorkingDay = (date) => {
+    const day = date.getDay();
+    if (day === 0) return true; // Sunday is always non-working for payments
+
+    const holiday = hd.isHoliday(date);
+    if (holiday) return true;
+
+    return false;
+};
 
 /**
- * Calculate periodic interest rate from monthly rate
- * @param {Number} monthlyRate - Monthly rate in percent (e.g. 15)
- * @param {String} frequency - Payment frequency
- * @returns {Number} Periodic rate as decimal
+ * Adjusts a date to the next working day if it falls on a non-working day.
+ */
+const adjustToNextWorkingDay = (date) => {
+    const adjusted = new Date(date);
+    while (isNonWorkingDay(adjusted)) {
+        adjusted.setDate(adjusted.getDate() + 1);
+    }
+    return adjusted;
+};
+
+/**
+ * EMI Formula: [P * r * (1 + r)^n] / [(1 + r)^n - 1]
+ * Uses higher precision for intermediate steps.
+ */
+const calculateEMI = (principal, periodicRate, periods) => {
+    if (periodicRate === 0) return principal / periods;
+
+    const p = parseFloat(principal);
+    const r = parseFloat(periodicRate);
+    const n = parseInt(periods);
+
+    const emi = (p * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
+    return emi;
+};
+
+/**
+ * Get periodic rate from monthly rate based on frequency.
  */
 const getPeriodicRate = (monthlyRate, frequency) => {
-    const rateDecimal = Number(monthlyRate) / 100;
-    let divisor = 1;
-    const freq = (frequency || '').toLowerCase();
+    const rateDecimal = parseFloat(monthlyRate) / 100;
 
-    if (freq === 'daily') divisor = 30;
-    if (freq === 'weekly') divisor = 4;
-    if (freq === 'biweekly' || freq === '15_30' || freq === '1_16') divisor = 2;
-    if (freq === 'monthly') divisor = 1;
-
-    return rateDecimal / divisor;
+    switch (frequency.toLowerCase()) {
+        case 'daily': return rateDecimal / 30;
+        case 'weekly': return rateDecimal / 4;
+        case 'biweekly': return rateDecimal / 2;
+        case 'monthly': return rateDecimal;
+        default: return rateDecimal;
+    }
 };
 
 /**
- * Generate complete loan schedule
- * @param {Object} loanData - Loan configuration
- * @param {Object} settings - Business settings
- * @returns {Object} { schedule, summary }
+ * Generate Schedule V3
  */
-const generateSchedule = (loanData, settings = null) => {
+exports.generateScheduleV3 = (params) => {
     const {
         amount,
         interestRateMonthly,
         duration,
         frequency,
-        frequencyMode,
-        lendingType,
         startDate,
-        firstPaymentDate
-    } = loanData;
-
-    switch (lendingType) {
-        case 'redito':
-            return generateReditoSchedule({
-                amount,
-                interestRateMonthly,
-                duration,
-                frequency,
-                frequencyMode,
-                startDate,
-                firstPaymentDate,
-                settings
-            });
-
-        case 'fixed':
-            return generateFixedSchedule({
-                amount,
-                interestRateMonthly,
-                duration,
-                frequency,
-                frequencyMode,
-                startDate,
-                firstPaymentDate,
-                settings
-            });
-
-        case 'amortization':
-            return generateAmortizationSchedule({
-                amount,
-                interestRateMonthly,
-                duration,
-                frequency,
-                frequencyMode,
-                startDate,
-                firstPaymentDate,
-                settings
-            });
-
-        default:
-            throw new Error(`Unknown lending type: ${lendingType}`);
-    }
-};
-
-/**
- * Generate Redito schedule
- * - No fixed term (but can have maximum periods)
- * - Interest per period on outstanding capital
- * - Capital paid whenever client wants
- */
-const generateReditoSchedule = (params) => {
-    const {
-        amount,
-        interestRateMonthly,
-        duration,
-        frequency,
-        frequencyMode,
         firstPaymentDate,
-        settings
+        lendingType // 'amortization' (EMI) or 'fixed'
     } = params;
 
+    const principal = parseFloat(amount);
     const periodicRate = getPeriodicRate(interestRateMonthly, frequency);
-    const interestAmount = roundToNearestFive(amount * periodicRate);
+    const n = parseInt(duration);
 
-    // Generate due dates
-    const dueDates = generateDueDates(
-        firstPaymentDate,
-        frequency,
-        frequencyMode,
-        duration || 12, // Default to 12 if no duration specified
-        settings
-    );
-
-    const schedule = dueDates.map((dueDate, index) => ({
-        number: index + 1,
-        dueDate: dueDate,
-        amount: interestAmount,
-        capital: 0, // Capital not fixed per installment
-        interest: interestAmount,
-        penaltyGenerated: 0,
-        capitalPaid: 0,
-        interestPaid: 0,
-        penaltyPaid: 0,
-        paidAmount: 0,
-        paidDate: null,
-        status: 'pending',
-        balance_start: amount,
-        balance_after: amount // Capital doesn't decrease automatically
-    }));
-
-    const summary = {
-        interestTotal: interestAmount, // Interest of first installment for Redito
-        capitalTotal: amount,
-        totalToPay: amount + interestAmount, // Initial total debt including first interest
-        installmentCount: schedule.length
-    };
-
-    return { schedule, summary };
-};
-
-/**
- * Generate Fixed schedule
- * - Fixed payment amount each period
- * - Capital = total capital / number of periods
- * - Interest = flat interest on original amount
- */
-const generateFixedSchedule = (params) => {
-    const {
-        amount,
-        interestRateMonthly,
-        duration,
-        frequency,
-        frequencyMode,
-        firstPaymentDate,
-        settings
-    } = params;
-
-    const periodicRate = getPeriodicRate(interestRateMonthly, frequency);
-
-    // Calculate interest
-    const interestTotalTheoretical = amount * periodicRate * duration;
-    const totalToPayTheoretical = amount + interestTotalTheoretical;
-    const paymentTheoretical = totalToPayTheoretical / duration;
-    const paymentAmount = roundToNearestFive(paymentTheoretical);
-
-    const totalToPayReal = paymentAmount * duration;
-    const interestTotalReal = totalToPayReal - amount;
-
-    const capitalPart = amount / duration;
-    const interestPart = interestTotalReal / duration;
-
-    // Generate due dates
-    const dueDates = generateDueDates(
-        firstPaymentDate,
-        frequency,
-        frequencyMode,
-        duration,
-        settings
-    );
-
-    let currentTotalDebt = totalToPayReal;
-
-    const schedule = dueDates.map((dueDate, index) => {
-        currentTotalDebt -= paymentAmount;
-
-        return {
-            number: index + 1,
-            dueDate: dueDate,
-            amount: paymentAmount,
-            capital: capitalPart,
-            interest: interestPart,
-            penaltyGenerated: 0,
-            capitalPaid: 0,
-            interestPaid: 0,
-            penaltyPaid: 0,
-            paidAmount: 0,
-            paidDate: null,
-            status: 'pending',
-            balance_start: currentTotalDebt + paymentAmount,
-            balance_after: Math.max(0, currentTotalDebt)
-        };
-    });
-
-    const summary = {
-        interestTotal: interestTotalReal,
-        capitalTotal: amount,
-        totalToPay: totalToPayReal,
-        installmentCount: schedule.length
-    };
-
-    return { schedule, summary };
-};
-
-/**
- * Generate Amortization schedule (Banking system)
- * - Uses financial formula for equal payments
- * - Interest calculated on reducing balance
- * - Capital portion increases over time
- */
-const generateAmortizationSchedule = (params) => {
-    const {
-        amount,
-        interestRateMonthly,
-        duration,
-        frequency,
-        frequencyMode,
-        firstPaymentDate,
-        settings
-    } = params;
-
-    const periodicRate = getPeriodicRate(interestRateMonthly, frequency);
-
-    // Calculate payment using amortization formula
-    let paymentTheoretical = 0;
-    if (periodicRate === 0) {
-        paymentTheoretical = amount / duration;
+    // 1. Calculate Quota
+    let quotaValue = 0;
+    if (lendingType === 'amortization') {
+        quotaValue = calculateEMI(principal, periodicRate, n);
+    } else if (lendingType === 'fixed') {
+        // Flat interest: (Principal / n) + (Principal * periodicRate)
+        quotaValue = (principal / n) + (principal * periodicRate);
     } else {
-        paymentTheoretical = amount * (periodicRate * Math.pow(1 + periodicRate, duration)) /
-            (Math.pow(1 + periodicRate, duration) - 1);
+        // Redito style: Only interest first, principal at end or manual
+        quotaValue = principal * periodicRate;
     }
 
-    const paymentAmount = roundToNearestFive(paymentTheoretical);
+    // 2. Generate Recursive Dates using RRule
+    const freqMap = {
+        'daily': RRule.DAILY,
+        'weekly': RRule.WEEKLY,
+        'biweekly': RRule.WEEKLY,
+        'monthly': RRule.MONTHLY
+    };
 
-    // Generate due dates
-    const dueDates = generateDueDates(
-        firstPaymentDate,
-        frequency,
-        frequencyMode,
-        duration,
-        settings
-    );
+    const rruleOptions = {
+        freq: freqMap[frequency.toLowerCase()],
+        dtstart: new Date(firstPaymentDate),
+        count: (lendingType === 'redito' && !duration) ? 12 : n
+    };
 
-    let currentBalance = amount;
+    if (frequency.toLowerCase() === 'biweekly') {
+        rruleOptions.interval = 2;
+    }
+
+    const rule = new RRule(rruleOptions);
+    const dates = rule.all();
+
+    // 3. Build Schedule
+    let currentBalance = principal;
     const schedule = [];
 
-    dueDates.forEach((dueDate, index) => {
-        const interestPart = currentBalance * periodicRate;
-        const capitalPart = paymentAmount - interestPart;
-        currentBalance -= capitalPart;
+    dates.forEach((date, index) => {
+        const adjustedDate = adjustToNextWorkingDay(date);
+
+        let interest = 0;
+        let capital = 0;
+        let quota = quotaValue;
+
+        if (lendingType === 'amortization') {
+            interest = currentBalance * periodicRate;
+            capital = quota - interest;
+            currentBalance -= capital;
+        } else if (lendingType === 'fixed') {
+            interest = principal * periodicRate;
+            capital = principal / n;
+            currentBalance -= capital;
+        } else {
+            // Redito
+            interest = principal * periodicRate;
+            capital = 0;
+            // Balance stays same until manual capital payment
+        }
+
+        // Final installment adjustment to kill the cents if needed
+        if (index === dates.length - 1 && lendingType !== 'redito') {
+            if (Math.abs(currentBalance) < 1) {
+                capital += currentBalance;
+                quota += currentBalance;
+                currentBalance = 0;
+            }
+        }
 
         schedule.push({
             number: index + 1,
-            dueDate: dueDate,
-            amount: paymentAmount,
-            capital: capitalPart,
-            interest: interestPart,
-            penaltyGenerated: 0,
-            capitalPaid: 0,
-            interestPaid: 0,
-            penaltyPaid: 0,
-            paidAmount: 0,
-            paidDate: null,
+            dueDate: adjustedDate,
+            amount: mongoose.Types.Decimal128.fromString(quota.toFixed(2)),
+            principalAmount: mongoose.Types.Decimal128.fromString(capital.toFixed(2)),
+            interestAmount: mongoose.Types.Decimal128.fromString(interest.toFixed(2)),
+            balance: mongoose.Types.Decimal128.fromString(Math.max(0, currentBalance).toFixed(2)),
             status: 'pending',
-            balance_start: currentBalance + capitalPart,
-            balance_after: Math.max(0, currentBalance)
+            daysOfGrace: 0
         });
     });
 
-    const summary = {
-        interestTotal: schedule.reduce((acc, s) => acc + s.interest, 0),
-        capitalTotal: amount,
-        totalToPay: schedule.reduce((acc, s) => acc + s.amount, 0),
-        installmentCount: schedule.length
+    return {
+        schedule,
+        totalInterest: schedule.reduce((acc, s) => acc + parseFloat(s.interestAmount.toString()), 0).toFixed(2),
+        totalToPay: (principal + schedule.reduce((acc, s) => acc + parseFloat(s.interestAmount.toString()), 0)).toFixed(2)
     };
+};
 
-    return { schedule, summary };
+/**
+ * Internal helper to get next recurring date
+ */
+const getNextDateInternal = (fromDate, frequency) => {
+    const date = new Date(fromDate);
+    switch (frequency.toLowerCase()) {
+        case 'daily': date.setDate(date.getDate() + 1); break;
+        case 'weekly': date.setDate(date.getDate() + 7); break;
+        case 'biweekly': date.setDate(date.getDate() + 14); break;
+        case 'monthly': date.setMonth(date.getMonth() + 1); break;
+        default: date.setDate(date.getDate() + 7);
+    }
+    return adjustToNextWorkingDay(date);
+};
+
+const getPrevDateInternal = (fromDate, frequency) => {
+    const date = new Date(fromDate);
+    switch (frequency.toLowerCase()) {
+        case 'daily': date.setDate(date.getDate() - 1); break;
+        case 'weekly': date.setDate(date.getDate() - 7); break;
+        case 'biweekly': date.setDate(date.getDate() - 14); break;
+        case 'monthly': date.setMonth(date.getMonth() - 1); break;
+        default: date.setDate(date.getDate() - 7);
+    }
+    return adjustToNextWorkingDay(date);
 };
 
 module.exports = {
-    generateSchedule,
-    generateReditoSchedule,
-    generateFixedSchedule,
-    generateAmortizationSchedule,
-    getPeriodicRate,
-    roundToNearestFive
+    generateScheduleV3: exports.generateScheduleV3,
+    isWorkingDay: (date) => !isNonWorkingDay(date),
+    adjustToNextWorkingDay,
+    getNextDueDate: getNextDateInternal,
+    getPrevDueDate: getPrevDateInternal
 };

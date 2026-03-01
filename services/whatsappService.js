@@ -1,6 +1,5 @@
 const Business = require('../models/Business');
 const Loan = require('../models/Loan');
-const LoanV2 = require('../models/LoanV2');
 
 /**
  * Servicio para gestionar la secuencia de mensajes de WhatsApp para prospectos Demo
@@ -56,11 +55,7 @@ exports.processTrialSequence = async () => {
 };
 
 exports.getLoanCount = async (businessId) => {
-    const [c1, c2] = await Promise.all([
-        Loan.countDocuments({ businessId }),
-        LoanV2.countDocuments({ businessId })
-    ]);
-    return c1 + c2;
+    return await Loan.countDocuments({ businessId });
 };
 
 exports.sendTrialMessage = async (business, templateKey) => {

@@ -12,8 +12,8 @@ const authMiddleware = (req, res, next) => {
 
     // Lógica de Inyección de Scope (Alcance)
     // Esto ayuda a los controladores a filtrar automáticamente
-    if (req.user.role === 'ti') {
-      // El TI puede enviar un header 'x-business-id' para actuar en nombre de una empresa
+    if (['ti', 'superadmin'].includes(req.user.role)) {
+      // El TI o Superadmin puede enviar un header 'x-business-id' para actuar en nombre de una empresa
       // Si no lo envía, es modo global
       req.businessFilter = req.headers['x-business-id'] ? { businessId: req.headers['x-business-id'] } : {};
     } else {

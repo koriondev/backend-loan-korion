@@ -41,6 +41,12 @@ exports.getBusinessActivity = async (req, res) => {
             return res.status(400).json({ error: 'ID de negocio inválido' });
         }
 
+        // --- SEGURIDAD SAAS: Validar Propiedad del Negocio ---
+        const isPlatformAdmin = ['ti', 'superadmin'].includes(req.user.role);
+        if (!isPlatformAdmin && businessId !== req.user.businessId?.toString()) {
+            return res.status(403).json({ error: 'No tiene permisos para ver la actividad de este negocio' });
+        }
+
         // Agrupar por usuario
         const activity = await UserActivity.aggregate([
             { $match: { businessId: new mongoose.Types.ObjectId(businessId) } },
@@ -63,8 +69,10 @@ exports.getBusinessActivity = async (req, res) => {
             {
                 $project: {
                     userId: '$_id',
-                    name: { $ifNull: ['$userInfo.name', 'Usuario Eliminado'] },
+                    name: { $ifNull: ['$userInfo.name', 'Usuario Eliminado (Histórico)'] },
                     email: { $ifNull: ['$userInfo.email', 'N/A'] },
+                    role: { $ifNull: ['$userInfo.role', 'N/A'] },
+                    isActive: { $ifNull: ['$userInfo.isActive', false] },
                     totalMinutes: 1,
                     lastActive: 1
                 }
