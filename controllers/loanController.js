@@ -734,7 +734,7 @@ exports.applyPenalty = async (req, res) => {
 
     try {
         const { id } = req.params;
-        const { walletId, paymentMethod, notes, customDate } = req.body;
+        const { walletId, paymentMethod, notes, customDate, amount } = req.body;
         const paymentDate = customDate ? new Date(customDate) : new Date();
 
         const loan = await Loan.findById(id).populate('clientId').session(session);
@@ -747,12 +747,20 @@ exports.applyPenalty = async (req, res) => {
         const currentQuota = loan.schedule[currentQuotaIndex];
         const amortizationEngine = require('../engines/amortizationEngine');
 
-        // 2. Calcular monto de la penalidad (Interés de la cuota actual)
+        // 2. Calcular monto de la penalidad
+        // Primero verificamos si hay mora real calculada
+        const settings = await Settings.findOne({ businessId: loan.businessId }).session(session);
+        const penaltyData = calculatePenaltyV3(loan, settings, paymentDate);
+        const paidPenaltyVal = getVal(loan.penaltyConfig?.paidPenalty);
+        const pendingPenalty = Math.max(0, penaltyData.totalPenalty - paidPenaltyVal);
+
         const rawInterestAmount = currentQuota.interestAmount != null ? currentQuota.interestAmount : currentQuota.interest;
         const rawPrincipalAmount = currentQuota.principalAmount != null ? currentQuota.principalAmount : currentQuota.capital;
-        const penaltyAmount = getVal(rawInterestAmount);
 
-        if (penaltyAmount <= 0) throw new Error("Esta cuota no tiene intereses pendientes para aplicar penalidad");
+        // Prioridad: 1. Monto manual, 2. Mora calculada, 3. Interés de la cuota (Gana Tiempo tradicional)
+        let penaltyAmount = amount ? parseFloat(amount) : (pendingPenalty > 0 ? pendingPenalty : getVal(rawInterestAmount));
+
+        if (penaltyAmount <= 0) throw new Error("No hay monto de penalidad o interés válido para aplicar");
 
         // 3. Lógica de Desplazamiento (Shift)
         // Guardar montos originales para la nueva cuota final
@@ -791,16 +799,34 @@ exports.applyPenalty = async (req, res) => {
             daysOfGrace: 0
         });
 
-        // 6. Actualizar totales del préstamo (el interés total sube por la penalidad)
+        // 6. Actualizar totales del préstamo
         if (!loan.financialModel) {
             loan.financialModel = { interestTotal: 0, interestPaid: 0, interestPending: 0 };
         }
-        loan.financialModel.interestTotal = (parseFloat(loan.financialModel.interestTotal || 0) + penaltyAmount);
-        loan.financialModel.interestPaid = (parseFloat(loan.financialModel.interestPaid || 0) + penaltyAmount);
+
+        // Atribuimos el pago según su origen (Si había mora, pagamos mora primero)
+        if (pendingPenalty > 0) {
+            const payMora = Math.min(penaltyAmount, pendingPenalty);
+            if (loan.penaltyConfig) {
+                loan.penaltyConfig.paidPenalty = getVal(loan.penaltyConfig.paidPenalty) + payMora;
+            }
+            const leftOver = penaltyAmount - payMora;
+            if (leftOver > 0) {
+                // El excedente se cuenta como interés adicional (Gana Tiempo)
+                loan.financialModel.interestTotal = (parseFloat(loan.financialModel.interestTotal || 0) + leftOver);
+                loan.financialModel.interestPaid = (parseFloat(loan.financialModel.interestPaid || 0) + leftOver);
+            }
+        } else {
+            // Todo se cuenta como interés si no había mora (Gana Tiempo puro)
+            loan.financialModel.interestTotal = (parseFloat(loan.financialModel.interestTotal || 0) + penaltyAmount);
+            loan.financialModel.interestPaid = (parseFloat(loan.financialModel.interestPaid || 0) + penaltyAmount);
+        }
+
         loan.duration += 1;
 
         loan.markModified('schedule');
         loan.markModified('financialModel');
+        loan.markModified('penaltyConfig');
 
         if (loan.frequencyMode && typeof loan.frequencyMode === 'string') {
             loan.frequencyMode = {};

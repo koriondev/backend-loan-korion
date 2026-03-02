@@ -41,7 +41,9 @@ exports.calculatePenaltyV3 = (loan, settings = null, referenceDate = null) => {
 
 const calculateFixedPenaltyV3 = (loan, settings, referenceDate = null) => {
     const config = loan.penaltyConfig;
-    const { value, gracePeriod, applyPerInstallment, periodMode, maxPenalty } = config;
+    const value = getVal(config.value);
+    const gracePeriod = getVal(config.gracePeriod);
+    const { applyPerInstallment, periodMode, maxPenalty } = config;
 
     const refDay = referenceDate ? new Date(referenceDate) : new Date();
     refDay.setHours(0, 0, 0, 0);
@@ -96,7 +98,9 @@ const calculateFixedPenaltyV3 = (loan, settings, referenceDate = null) => {
 
 const calculatePercentPenaltyV3 = (loan, settings, referenceDate = null) => {
     const config = loan.penaltyConfig;
-    const { value, gracePeriod, applyPerInstallment, applyOn, periodMode, maxPenalty } = config;
+    const value = getVal(config.value);
+    const gracePeriod = getVal(config.gracePeriod);
+    const { applyPerInstallment, applyOn, periodMode, maxPenalty } = config;
 
     const refDay = referenceDate ? new Date(referenceDate) : new Date();
     refDay.setHours(0, 0, 0, 0);
@@ -165,7 +169,7 @@ const getOverduePeriods = (dueDate, periodMode, gracePeriod, settings, refDay = 
 
     const startOfToday = normalizeDate(refDay || new Date());
     const graceDeadline = normalizeDate(dueDate);
-    graceDeadline.setUTCDate(graceDeadline.getUTCDate() + gracePeriod);
+    graceDeadline.setUTCDate(graceDeadline.getUTCDate() + (gracePeriod || 0));
 
     if (startOfToday <= graceDeadline) return 0;
 
