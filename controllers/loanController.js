@@ -16,6 +16,7 @@ const { generateScheduleV3 } = require('../engines/amortizationEngine');
 const { calculatePenaltyV3 } = require('../engines/penaltyEngine');
 const { distributePayment, applyPaymentToLoan, validatePaymentAmount } = require('../engines/paymentEngine');
 const financeController = require('./financeController');
+const eventBus = require('../utils/eventBus');
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -459,6 +460,17 @@ exports.registerPayment = async (req, res) => {
         await payment.save({ session });
 
         await session.commitTransaction();
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // Trigger Telegram Alerts (Decoupled)
+        // ─────────────────────────────────────────────────────────────────────────
+        eventBus.emit('payment_registered', {
+            amount: amount,
+            clientId: loan.clientId._id,
+            clientName: loan.clientId.name || loan.clientId.cedula,
+            businessId: loan.businessId,
+            loanId: loan._id
+        });
 
         res.json({
             success: true,

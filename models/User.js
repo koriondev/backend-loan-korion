@@ -22,6 +22,9 @@ const UserSchema = new mongoose.Schema({
     enum: ['pending_activation', 'active', 'suspended'],
     default: 'active'
   },
+  telegramChatId: { type: String, default: null },
+  telegramAuthToken: { type: String, default: null },
+  telegramAuthExpires: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now }
 });
 

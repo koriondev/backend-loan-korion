@@ -60,6 +60,10 @@ app.use('/api/config', settingsRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/platform', platformRoutes); // SaaS Platform Logic
 app.use('/api/products', productRoutes);  // SaaS Product Logic
+app.use('/api/telegram', require('./routes/telegram')); // Telegram Bot Integration
+
+// Inicializar Background Services (Event Listeners)
+require('./services/telegramNotificationService');
 
 // Ruta base de prueba
 app.get('/', (req, res) => {
