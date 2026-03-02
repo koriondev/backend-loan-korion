@@ -7,7 +7,18 @@
  * Order: Penalty → Interest → Capital
  */
 
+const mongoose = require('mongoose');
 const { getPeriodicRate } = require('./amortizationEngine');
+
+const getVal = (v) => {
+    if (v === null || v === undefined) return 0;
+    if (typeof v === 'object' && v.$numberDecimal) return parseFloat(v.$numberDecimal);
+    if (typeof v === 'object' && v.constructor.name === 'Decimal128') return parseFloat(v.toString());
+    return parseFloat(v) || 0;
+};
+
+const toDecimal = (v) => mongoose.Types.Decimal128.fromString(parseFloat(v || 0).toFixed(2));
+
 
 /**
  * Distribute payment amount across loan obligations
@@ -154,9 +165,12 @@ const applyPaymentToLoan = (loan, distribution) => {
     distribution.installmentUpdates.forEach(update => {
         const inst = loan.schedule.find(i => i.number === update.number);
         if (inst) {
-            inst.interestPaid = (inst.interestPaid || 0) + update.interestPaid;
-            inst.capitalPaid = (inst.capitalPaid || 0) + update.capitalPaid;
-            inst.paidAmount = (inst.interestPaid || 0) + (inst.capitalPaid || 0);
+            const currentInterestPaid = getVal(inst.interestPaid);
+            const currentCapitalPaid = getVal(inst.capitalPaid);
+
+            inst.interestPaid = toDecimal(currentInterestPaid + update.interestPaid);
+            inst.capitalPaid = toDecimal(currentCapitalPaid + update.capitalPaid);
+            inst.paidAmount = toDecimal(getVal(inst.interestPaid) + getVal(inst.capitalPaid));
             inst.status = update.newStatus;
 
             if (inst.status === 'paid' && !inst.paidDate) {
@@ -187,8 +201,10 @@ const applyPaymentToLoan = (loan, distribution) => {
     }
 
     // Update financial model
-    loan.financialModel.interestPaid = (loan.financialModel.interestPaid || 0) + distribution.appliedInterest;
-    loan.financialModel.interestPending = Math.max(0, loan.financialModel.interestTotal - loan.financialModel.interestPaid);
+    if (!loan.financialModel) loan.financialModel = { interestPaid: 0, interestPending: 0, interestTotal: 0 };
+
+    loan.financialModel.interestPaid = (getVal(loan.financialModel.interestPaid) || 0) + distribution.appliedInterest;
+    loan.financialModel.interestPending = Math.max(0, getVal(loan.financialModel.interestTotal) - loan.financialModel.interestPaid);
 
     // Update status
     if (distribution.isFullPayoff || loan.currentCapital <= 0.1) {

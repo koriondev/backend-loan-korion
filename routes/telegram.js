@@ -65,10 +65,16 @@ router.post('/webhook', async (req, res) => {
         const chatId = update.message.chat.id;
         const text = update.message.text.trim(); // Ej: "/start abcdef123"
 
+        console.log(`[Telegram Webhook] Received from ${chatId}: "${text}"`);
+
         if (text.startsWith('/start ')) {
             const token = text.split(' ')[1]; // Extraer token
+            console.log(`[Telegram Webhook] Attempting link with token: ${token}`);
 
-            if (!token) return;
+            if (!token) {
+                console.log(`[Telegram Webhook] No token found in /start command`);
+                return;
+            }
 
             // Buscar si hay un usuario con ese token activo que no haya expirado
             const user = await User.findOne({
@@ -77,9 +83,12 @@ router.post('/webhook', async (req, res) => {
             });
 
             if (!user) {
+                console.log(`[Telegram Webhook] Token ${token} NOT found or expired.`);
                 await sendTelegramDirectMessage(chatId, "❌ <b>Error:</b> Token de vinculación no encontrado o expirado. Genera uno nuevo en Korion y vuelve a intentarlo.");
                 return;
             }
+
+            console.log(`[Telegram Webhook] SUCCESS! Linking user ${user.name} (${user.email}) to ChatID ${chatId}`);
 
             // Match exitoso: Limpiamos token y asignamos Chat ID permanentemente
             user.telegramChatId = chatId.toString();
@@ -88,7 +97,10 @@ router.post('/webhook', async (req, res) => {
             await user.save();
 
             // Desacoplar respuesta exitosa al usuario final vía API
-            await sendTelegramDirectMessage(chatId, `✅ <b>Cuenta vinculada con éxito</b>, ${user.name}.\n\nYa estás suscrito en tiempo real a las alertas financieras de Korion para tu empresa. 🎉`);
+            await sendTelegramDirectMessage(chatId, `✅ <b>Cuenta vinculada con éxito</b>, ${user.name}.\n\nYa estás suscrito en tiempo real a las alertas de Korion para tu empresa. 🎉`);
+        } else if (text === '/start') {
+            console.log(`[Telegram Webhook] Simple /start received (no token)`);
+            await sendTelegramDirectMessage(chatId, "👋 ¡Hola! Para vincular tu cuenta, por favor usa el botón 'Vincular Telegram' desde el panel de Configuración en Korion.");
         }
 
     } catch (error) {

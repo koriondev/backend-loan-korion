@@ -175,7 +175,7 @@ exports.createLoan = async (req, res) => {
             const ApprovalRequest = require('../models/ApprovalRequest');
             const reqApproval = new ApprovalRequest({
                 loanId: newLoan._id,
-                requesterId: req.user._id,
+                requesterId: req.user.id || req.user._id,
                 walletOwnerId: fundingWallet.ownerId,
                 requestedAmount: amount,
                 status: 'pending',

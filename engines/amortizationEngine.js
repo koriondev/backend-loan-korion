@@ -68,7 +68,7 @@ const getPeriodicRate = (monthlyRate, frequency) => {
 /**
  * Generate Schedule V3
  */
-exports.generateScheduleV3 = (params) => {
+const generateScheduleV3 = (params) => {
     const {
         amount,
         interestRateMonthly,
@@ -163,10 +163,20 @@ exports.generateScheduleV3 = (params) => {
         });
     });
 
+    const totalInterestValue = schedule.reduce((acc, s) => acc + parseFloat(s.interestAmount.toString()), 0);
+    const totalToPayValue = principal + totalInterestValue;
+
+    const totalInterest = parseFloat(totalInterestValue.toFixed(2));
+    const totalToPay = parseFloat(totalToPayValue.toFixed(2));
+
     return {
         schedule,
-        totalInterest: schedule.reduce((acc, s) => acc + parseFloat(s.interestAmount.toString()), 0).toFixed(2),
-        totalToPay: (principal + schedule.reduce((acc, s) => acc + parseFloat(s.interestAmount.toString()), 0)).toFixed(2)
+        totalInterest,
+        totalToPay,
+        summary: {
+            interestTotal: totalInterest,
+            totalToPay: totalToPay
+        }
     };
 };
 
@@ -198,7 +208,7 @@ const getPrevDateInternal = (fromDate, frequency) => {
 };
 
 module.exports = {
-    generateScheduleV3: exports.generateScheduleV3,
+    generateScheduleV3,
     isWorkingDay: (date) => !isNonWorkingDay(date),
     adjustToNextWorkingDay,
     getNextDueDate: getNextDateInternal,
