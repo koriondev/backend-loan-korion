@@ -283,7 +283,7 @@ const applyGracePeriod = (dueDate, graceDays, settings) => {
  * @returns {Boolean} True if working day
  */
 const isWorkingDay = (date, settings) => {
-    if (!settings || !settings.workingDays) return true;
+    if (!settings || !settings.workingDays || settings.workingDays.length === 0) return true;
 
     // Utilize getUTCDay since dates are normalized to UTC noon
     const dayOfWeek = date.getUTCDay();
