@@ -13,10 +13,34 @@ const SettingsSchema = new mongoose.Schema({
   currency: { type: String, default: 'DOP' },
   defaultInterest: { type: Number, default: 10 },
 
-  // Configuración de Mora (Vital para producción)
+  // Configuración de Mora Global (Aplica a todos los préstamos nuevos por defecto)
+  // Los campos legacy lateFeeType/lateFeeValue/gracePeriod se mantienen para compat.
   lateFeeType: { type: String, enum: ['percent', 'fixed'], default: 'percent' }, // % o Fijo
   lateFeeValue: { type: Number, default: 5 }, // Ej: 5%
   gracePeriod: { type: Number, default: 3 }, // Días de gracia antes de cobrar mora
+
+  // Configuración de Mora Global Completa (V2 - reemplaza los campos simples)
+  defaultPenaltyConfig: {
+    type: {
+      type: String,
+      enum: ['fixed', 'percent'],
+      default: 'fixed'
+    },
+    value: { type: Number, default: 500 },
+    gracePeriod: { type: Number, default: 0 },
+    periodMode: {
+      type: String,
+      enum: ['daily', 'weekly', 'biweekly', 'monthly'],
+      default: 'daily'
+    },
+    applyPerInstallment: { type: Boolean, default: false },
+    applyOn: {
+      type: String,
+      enum: ['quota', 'capital', 'interest', 'balance'],
+      default: 'quota'
+    },
+    maxPenalty: { type: Number, default: null }
+  },
 
   // Configuración de Días Laborables
   workingDays: { type: [Number], default: [1, 2, 3, 4, 5, 6] }, // 0=Dom, 1=Lun ... 6=Sab
