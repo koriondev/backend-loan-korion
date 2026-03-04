@@ -232,18 +232,18 @@ const getOverduePeriods = (dueDate, periodMode, gracePeriod, settings) => {
         currentDate.setUTCDate(currentDate.getUTCDate() + 1);
     }
 
-    // Convert to periods based on mode
+    // Convert to periods based on mode (if overdue, at least 1 period applies)
     switch (periodMode) {
         case 'daily':
             return workingDaysOverdue;
         case 'weekly':
-            return Math.floor(workingDaysOverdue / 7);
+            return Math.floor(workingDaysOverdue / 7) + 1;
         case 'biweekly':
-            return Math.floor(workingDaysOverdue / 15);
+            return Math.floor(workingDaysOverdue / 15) + 1;
         case 'monthly':
-            return Math.floor(workingDaysOverdue / 30);
+            return Math.floor(workingDaysOverdue / 30) + 1;
         default:
-            return workingDaysOverdue;
+            return workingDaysOverdue > 0 ? 1 : 0;
     }
 };
 

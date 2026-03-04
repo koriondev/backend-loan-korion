@@ -155,6 +155,10 @@ const ScheduleItemSchema = new mongoose.Schema({
     paidDate: {
         type: Date,
         default: null
+    },
+    notes: {
+        type: String,
+        default: ""
     }
 }, { _id: false });
 

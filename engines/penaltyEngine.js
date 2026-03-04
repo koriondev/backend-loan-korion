@@ -172,12 +172,13 @@ const getOverduePeriods = (dueDate, periodMode, gracePeriod, settings, refDay = 
     const diffTime = Math.abs(startOfToday.getTime() - graceDeadline.getTime());
     const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24)); // Usar round sobre horas absolutas
 
+    // Si pasó el periodo de gracia, se cobra al menos 1 periodo (se cobra de inmediato al vencer)
     switch (periodMode) {
         case 'daily': return diffDays;
-        case 'weekly': return Math.floor(diffDays / 7);
-        case 'biweekly': return Math.floor(diffDays / 15);
-        case 'monthly': return Math.floor(diffDays / 30);
-        default: return diffDays;
+        case 'weekly': return Math.floor(diffDays / 7) + 1;
+        case 'biweekly': return Math.floor(diffDays / 15) + 1;
+        case 'monthly': return Math.floor(diffDays / 30) + 1;
+        default: return diffDays > 0 ? 1 : 0;
     }
 };
 

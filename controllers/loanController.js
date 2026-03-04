@@ -755,7 +755,7 @@ exports.applyPenalty = async (req, res) => {
         // Usar monto proveído por el usuario o usar fallback
         const penaltyAmount = req.body.amount !== undefined ? Number(req.body.amount) : fallbackPenalty;
 
-        if (penaltyAmount <= 0) throw new Error("Monto de penalidad inválido");
+        if (penaltyAmount < 0) throw new Error("Monto de penalidad no puede ser negativo");
 
         // 3. Lógica de Desplazamiento (Shift)
         // Guardar montos originales para la nueva cuota final
@@ -854,7 +854,7 @@ exports.applyPenalty = async (req, res) => {
         const PaymentV2 = require('../models/PaymentV2');
         const payment = new PaymentV2({
             loanId: loan._id,
-            date: new Date(),
+            date: paymentDate,
             amount: penaltyAmount,
             remainingPayment: 0,
             appliedPenalty: penaltyAmount,
@@ -981,8 +981,8 @@ exports.deletePayment = async (req, res) => {
                     loan.schedule[i].dueDate = amortizationEngine.getPrevDueDate(loan.schedule[i].dueDate, loan.frequency);
                 }
 
-                // 5. Ajustar métricas financieras
-                loan.duration = Math.max(0, loan.duration - 1);
+                // 5. Ajustar métricas financieras de forma segura
+                loan.duration = Math.max(0, loan.schedule.length);
                 loan.financialModel = loan.financialModel || {};
                 loan.financialModel.interestTotal = Math.max(0, (loan.financialModel.interestTotal || 0) - amount);
                 loan.financialModel.interestPaid = Math.max(0, (loan.financialModel.interestPaid || 0) - amount);
