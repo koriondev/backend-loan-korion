@@ -374,7 +374,7 @@ exports.registerPayment = async (req, res) => {
         }
 
         // Save loan
-        await loan.save({ session });
+        await loan.save({ session, validateBeforeSave: false });
 
         // ────────────────────────────────────────────────────────────────────
         // REGISTRO SIMPLE: Todo el pago va a la cartera seleccionada
@@ -809,7 +809,7 @@ exports.applyPenalty = async (req, res) => {
             loan.frequencyMode = {};
         }
 
-        await loan.save({ session });
+        await loan.save({ session, validateBeforeSave: false });
 
         // 7. Registrar Finanzas
         let finalWalletId = walletId || loan.fundingWalletId;
@@ -915,8 +915,13 @@ exports.deletePayment = async (req, res) => {
         const PaymentV2 = require('../models/PaymentV2');
         const Transaction = require('../models/Transaction');
 
-        const payment = await PaymentV2.findById(paymentId).session(session);
-        if (!payment) throw new Error('Pago no encontrado');
+        let payment = await PaymentV2.findById(paymentId).session(session);
+        let isV1 = false;
+        if (!payment) {
+            payment = await Transaction.findById(paymentId).session(session);
+            if (!payment) throw new Error('Pago no encontrado');
+            isV1 = true;
+        }
 
         const loan = await Loan.findById(loanId).session(session);
         if (!loan) throw new Error('Préstamo no encontrado');
@@ -925,7 +930,13 @@ exports.deletePayment = async (req, res) => {
             throw new Error('Acceso denegado');
         }
 
-        const { appliedCapital, appliedInterest, appliedPenalty, amount, walletId } = payment;
+        const breakdown = payment.metadata?.breakdown || {};
+        const appliedCapital = breakdown.capital || breakdown.appliedCapital || payment.appliedCapital || 0;
+        const appliedInterest = breakdown.interest || breakdown.appliedInterest || payment.appliedInterest || 0;
+        const appliedPenalty = breakdown.mora || breakdown.appliedPenalty || payment.appliedPenalty || 0;
+        const amount = payment.amount;
+        const walletId = payment.wallet || payment.walletId;
+
         const getD = (v) => v && v.$numberDecimal ? parseFloat(v.$numberDecimal) : parseFloat(v || 0);
 
         // --- LÓGICA ESPECIAL: REVERTIR GANA TIEMPO (SHIFT) ---
@@ -1023,7 +1034,7 @@ exports.deletePayment = async (req, res) => {
         loan.markModified('schedule');
         loan.markModified('financialModel');
         loan.markModified('penaltyConfig');
-        await loan.save({ session });
+        await loan.save({ session, validateBeforeSave: false });
 
         // Ajustar balance de cartera
         if (walletId) {
@@ -1041,11 +1052,17 @@ exports.deletePayment = async (req, res) => {
             { session }
         );
 
-        // Eliminar la Transaction relacionada (si existe)
-        await Transaction.deleteMany({ loanV3: loanId, receiptId: payment.receiptId }).session(session);
-
-        // Eliminar el PaymentV2
-        await PaymentV2.findByIdAndDelete(paymentId).session(session);
+        // Eliminar el documento correcto
+        if (isV1) {
+            await Transaction.findByIdAndDelete(paymentId).session(session);
+        } else {
+            // Eliminar la Transaction de espejo relacionada (si existe)
+            if (payment.receiptId) {
+                await Transaction.deleteMany({ loanV3: loanId, receiptId: payment.receiptId }).session(session);
+            }
+            // Eliminar el PaymentV2
+            await PaymentV2.findByIdAndDelete(paymentId).session(session);
+        }
 
         await session.commitTransaction();
         res.json({ success: true, message: 'Pago eliminado y préstamo restaurado correctamente' });
