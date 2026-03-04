@@ -155,7 +155,7 @@ const distributePayment = (loan, amount, currentPenalty) => {
  * @param {Object} distribution - Distribution from distributePayment
  * @returns {Object} Updated loan
  */
-const applyPaymentToLoan = (loan, distribution) => {
+const applyPaymentToLoan = (loan, distribution, paymentDate = null) => {
     // Update penalty paid
     if (distribution.appliedPenalty > 0) {
         loan.penaltyConfig.paidPenalty = (loan.penaltyConfig.paidPenalty || 0) + distribution.appliedPenalty;
@@ -174,7 +174,7 @@ const applyPaymentToLoan = (loan, distribution) => {
             inst.status = update.newStatus;
 
             if (inst.status === 'paid' && !inst.paidDate) {
-                inst.paidDate = new Date();
+                inst.paidDate = paymentDate || new Date();
             }
         }
     });

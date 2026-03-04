@@ -362,7 +362,7 @@ exports.registerPayment = async (req, res) => {
         const distribution = distributePayment(loan, amount, penaltyData);
 
         // Apply distribution to loan
-        applyPaymentToLoan(loan, distribution);
+        applyPaymentToLoan(loan, distribution, paymentDate);
 
         loan.markModified('schedule');
         loan.markModified('financialModel');

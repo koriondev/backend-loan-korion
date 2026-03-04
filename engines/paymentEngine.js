@@ -96,7 +96,7 @@ const distributePaymentV3 = (loan, amount, currentPenalty) => {
     return distribution;
 };
 
-const applyPaymentToLoanV3 = (loan, distribution) => {
+const applyPaymentToLoanV3 = (loan, distribution, paymentDate = null) => {
     // Update penalty paid
     if (distribution.appliedPenalty > 0) {
         if (!loan.penaltyConfig) {
@@ -115,7 +115,7 @@ const applyPaymentToLoanV3 = (loan, distribution) => {
             inst.status = update.newStatus;
 
             if (inst.status === 'paid' && !inst.paidDate) {
-                inst.paidDate = new Date();
+                inst.paidDate = paymentDate || new Date();
             }
         }
     });
@@ -172,11 +172,11 @@ exports.distributePayment = (loan, amount, penaltyData) => {
     return distributePaymentV3(loan, amount, penaltyData);
 };
 
-exports.applyPaymentToLoan = (loan, distribution) => {
+exports.applyPaymentToLoan = (loan, distribution, paymentDate = null) => {
     if (loan.version < 3) {
-        return legacyPaymentEngine.applyPaymentToLoan(loan, distribution);
+        return legacyPaymentEngine.applyPaymentToLoan(loan, distribution, paymentDate);
     }
-    return applyPaymentToLoanV3(loan, distribution);
+    return applyPaymentToLoanV3(loan, distribution, paymentDate);
 };
 
 exports.validatePaymentAmount = (loan, amount, penaltyData) => {
