@@ -28,7 +28,8 @@ const TransactionSchema = new mongoose.Schema({
   loanV3: { type: mongoose.Schema.Types.ObjectId, ref: 'Loan' },
   wallet: { type: mongoose.Schema.Types.ObjectId, ref: 'Wallet', required: true }, // <--- ¡ESTO FALTABA!
 
-  date: { type: Date, default: Date.now }
+  date: { type: Date, default: Date.now },
+  isArchived: { type: Boolean, default: false }
 });
 
 module.exports = mongoose.model('Transaction', TransactionSchema);

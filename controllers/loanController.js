@@ -259,7 +259,14 @@ exports.getLoans = async (req, res) => {
     try {
         const businessIdStr = req.user.businessId;
         const businessId = new mongoose.Types.ObjectId(businessIdStr);
-        const bizFilter = { businessId: { $in: [businessId, businessIdStr] } };
+        let bizFilter = { businessId: { $in: [businessId, businessIdStr] } };
+
+        // Handle Archiving filter
+        if (req.query.status === 'archived') {
+            bizFilter.status = 'archived';
+        } else {
+            bizFilter.status = { $ne: 'archived' };
+        }
 
         const loans = await Loan.find(bizFilter)
             .populate('clientId', 'name cedula phone')
@@ -824,6 +831,7 @@ exports.applyPenalty = async (req, res) => {
             await wallet.save({ session });
         }
 
+        const receiptId = `REC-PEN-${Date.now().toString().slice(-6)}`;
         const Transaction = require('../models/Transaction');
         const tx = await new Transaction({
             businessId: loan.businessId,
@@ -836,6 +844,7 @@ exports.applyPenalty = async (req, res) => {
             wallet: finalWalletId,
             client: loan.clientId,
             date: paymentDate,
+            receiptId, // <--- Vincular con el recibo para permitir borrado
             metadata: {
                 concept: 'penalty_shift',
                 originalQuotaNumber: currentQuota.number,
@@ -850,7 +859,6 @@ exports.applyPenalty = async (req, res) => {
         }).save({ session });
 
         // 8. Crear Registro de Pago
-        const receiptId = `REC-PEN-${Date.now().toString().slice(-6)}`;
         const PaymentV2 = require('../models/PaymentV2');
         const payment = new PaymentV2({
             loanId: loan._id,
@@ -1059,6 +1067,21 @@ exports.deletePayment = async (req, res) => {
             // Eliminar la Transaction de espejo relacionada (si existe)
             if (payment.receiptId) {
                 await Transaction.deleteMany({ loanV3: loanId, receiptId: payment.receiptId }).session(session);
+            } else {
+                // Fallback de seguridad: Si no hay receiptId (por error previo), buscar por criteria parecida
+                // Esto limpia los "huérfanos" que reporta el usuario
+                const startTime = new Date(payment.date);
+                startTime.setHours(0, 0, 0, 0);
+                const endTime = new Date(payment.date);
+                endTime.setHours(23, 59, 59, 999);
+
+                await Transaction.deleteMany({
+                    loanV3: loanId,
+                    amount: payment.amount,
+                    type: 'in_payment',
+                    date: { $gte: startTime, $lte: endTime },
+                    receiptId: { $exists: false }
+                }).session(session);
             }
             // Eliminar el PaymentV2
             await PaymentV2.findByIdAndDelete(paymentId).session(session);
@@ -1175,4 +1198,163 @@ exports.payLoan = async (req, res) => {
     req.params.id = req.body.loanId;
     return exports.registerPayment(req, res);
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ARCHIVE / RESTORE LOANS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ARCHIVE LOAN
+ * Behaves like a reversal: reverts wallet/client balance impacts but keeps data.
+ */
+exports.archiveLoan = async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+        const loanId = req.params.id;
+        const loan = await Loan.findById(loanId).session(session);
+
+        if (!loan) return res.status(404).json({ error: 'Préstamo no encontrado' });
+        if (loan.status === 'archived') return res.status(400).json({ error: 'El préstamo ya está archivado' });
+
+        const Transaction = require('../models/Transaction');
+        const payments = await PaymentV2.find({ loanId }).session(session);
+        const txs = await Transaction.find({
+            $or: [
+                { loanV3: loanId },
+                { loanV2: loanId },
+                { loan: loanId },
+                { 'metadata.loanId': loanId.toString() },
+                { description: { $regex: loanId.toString().slice(-6) } }
+            ]
+        }).session(session);
+
+        // 1. Revert Disbursement Impact
+        if (loan.status !== 'pending_approval' && loan.status !== 'rejected') {
+            const wallet = await Wallet.findById(loan.fundingWalletId).session(session);
+            if (wallet) {
+                wallet.balance += loan.amount;
+                await wallet.save({ session });
+            }
+
+            // Total Debt Reversal (Principal + Interest)
+            const totalToRevert = loan.schedule.reduce((sum, q) => sum + getVal(q.principalAmount || q.capital) + getVal(q.interestAmount || q.interest), 0);
+            await Client.findByIdAndUpdate(loan.clientId, { $inc: { balance: -totalToRevert } }, { session });
+        }
+
+        // 2. Revert Each Payment Impact
+        for (const p of payments) {
+            const pWallet = await Wallet.findById(p.walletId).session(session);
+            if (pWallet) {
+                pWallet.balance -= p.amount;
+                await pWallet.save({ session });
+            }
+            await Client.findByIdAndUpdate(loan.clientId, { $inc: { balance: p.amount } }, { session });
+            p.isArchived = true;
+            await p.save({ session });
+        }
+
+        // 3. Mark Transactions as Archived
+        for (const tx of txs) {
+            tx.isArchived = true;
+            await tx.save({ session });
+        }
+
+        // 4. Update Loan Status
+        loan.previousStatus = loan.status;
+        loan.status = 'archived';
+        await loan.save({ session, validateBeforeSave: false });
+
+        await session.commitTransaction();
+
+        // Recalcular balance de cartera para seguridad
+        if (loan.fundingWalletId) {
+            await financeController.recalculateWalletBalance(loan.fundingWalletId);
+        }
+
+        res.json({ success: true, message: 'Préstamo archivado correctamente. Sus balances fueron revertidos.' });
+    } catch (e) {
+        await session.abortTransaction();
+        res.status(500).json({ error: e.message });
+    } finally {
+        session.endSession();
+    }
+};
+
+/**
+ * RESTORE LOAN
+ * Re-applies balance impacts.
+ */
+exports.restoreLoan = async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+        const loanId = req.params.id;
+        const loan = await Loan.findById(loanId).session(session);
+
+        if (!loan) return res.status(404).json({ error: 'Préstamo no encontrado' });
+        if (loan.status !== 'archived') return res.status(400).json({ error: 'El préstamo no está archivado' });
+
+        const Transaction = require('../models/Transaction');
+        const payments = await PaymentV2.find({ loanId }).session(session);
+        const txs = await Transaction.find({
+            $or: [
+                { loanV3: loanId },
+                { loanV2: loanId },
+                { loan: loanId },
+                { 'metadata.loanId': loanId.toString() },
+                { description: { $regex: loanId.toString().slice(-6) } }
+            ]
+        }).session(session);
+
+        // 1. Re-apply Disbursement Impact
+        if (loan.previousStatus !== 'pending_approval' && loan.previousStatus !== 'rejected') {
+            const wallet = await Wallet.findById(loan.fundingWalletId).session(session);
+            if (wallet) {
+                wallet.balance -= loan.amount;
+                await wallet.save({ session });
+            }
+
+            const totalToRestore = loan.schedule.reduce((sum, q) => sum + getVal(q.principalAmount || q.capital) + getVal(q.interestAmount || q.interest), 0);
+            await Client.findByIdAndUpdate(loan.clientId, { $inc: { balance: totalToRestore } }, { session });
+        }
+
+        // 2. Re-apply Each Payment Impact
+        for (const p of payments) {
+            const pWallet = await Wallet.findById(p.walletId).session(session);
+            if (pWallet) {
+                pWallet.balance += p.amount;
+                await pWallet.save({ session });
+            }
+            await Client.findByIdAndUpdate(loan.clientId, { $inc: { balance: -p.amount } }, { session });
+            p.isArchived = false;
+            await p.save({ session });
+        }
+
+        // 3. Mark Transactions as Un-Archived
+        for (const tx of txs) {
+            tx.isArchived = false;
+            await tx.save({ session });
+        }
+
+        // 4. Restore Status
+        loan.status = loan.previousStatus || 'active';
+        loan.previousStatus = null;
+        await loan.save({ session, validateBeforeSave: false });
+
+        await session.commitTransaction();
+
+        if (loan.fundingWalletId) {
+            await financeController.recalculateWalletBalance(loan.fundingWalletId);
+        }
+
+        res.json({ success: true, message: 'Préstamo restaurado correctamente. Sus balances fueron restablecidos.' });
+    } catch (e) {
+        await session.abortTransaction();
+        res.status(500).json({ error: e.message });
+    } finally {
+        session.endSession();
+    }
+};
+
 module.exports = exports;

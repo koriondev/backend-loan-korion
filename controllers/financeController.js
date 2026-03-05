@@ -11,7 +11,7 @@ const recalculateWalletBalance = async (walletId) => {
   const wallet = await Wallet.findById(walletId);
   if (!wallet) return 0;
 
-  const transactions = await Transaction.find({ wallet: walletId });
+  const transactions = await Transaction.find({ wallet: walletId, isArchived: { $ne: true } });
 
   const operationalFlux = transactions.reduce((acc, tx) => {
     // Ignoramos categorías de configuración de capital base para no duplicar con initialCapital
@@ -215,8 +215,15 @@ exports.getHistory = async (req, res) => {
       return res.json([]);
     }
 
-    // 2. Filtro Automático
-    const queryFilter = { ...(req.businessFilter || { businessId: req.user.businessId }) };
+    // 2. Filtro Automático (Exclude Archived unless for specific loan)
+    const queryFilter = {
+      ...(req.businessFilter || { businessId: req.user.businessId })
+    };
+
+    // Only allow archived transactions when viewing a specific loan details history
+    if (!req.query.loanId) {
+      queryFilter.isArchived = { $ne: true };
+    }
 
     // 3. Filtro por Propietario (Si no es Admin/TI)
     if (req.user.role !== 'admin' && req.user.role !== 'ti') {
@@ -264,7 +271,10 @@ exports.getWalletDetails = async (req, res) => {
   try {
     const { id } = req.params;
     const wallet = await Wallet.findById(id);
-    const transactions = await Transaction.find({ wallet: id })
+    const transactions = await Transaction.find({
+      wallet: id,
+      isArchived: { $ne: true }
+    })
       .sort({ date: -1 })
       .populate('client', 'name'); // Ver quién pagó
 
@@ -421,7 +431,7 @@ exports.recalculateAllWallets = async (req, res) => {
 
     for (const wallet of wallets) {
       const before = wallet.balance;
-      const transactions = await Transaction.find({ wallet: wallet._id });
+      const transactions = await Transaction.find({ wallet: wallet._id, isArchived: { $ne: true } });
 
       const ignoreCategories = [
         'Capital de Apertura', 'Inyección de Capital', 'Ajuste de Saldo',

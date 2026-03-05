@@ -264,8 +264,13 @@ const LoanSchema = new mongoose.Schema({
 
     status: {
         type: String,
-        enum: ['active', 'paid', 'past_due', 'bad_debt', 'pending_approval', 'rejected'],
+        enum: ['active', 'paid', 'past_due', 'bad_debt', 'pending_approval', 'rejected', 'archived'],
         default: 'active'
+    },
+
+    previousStatus: {
+        type: String,
+        default: null
     },
 
     // ─────────────────────────────────────────────────────────────────────────
