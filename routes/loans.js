@@ -31,6 +31,7 @@ router.post('/',
 
 router.get('/:id/payments', loanController.getLoanPayments);
 router.post('/:id/payments', loanController.registerPayment);
+router.post('/:id/recalculate', loanController.recalculateLoan);
 router.delete('/:id/payments/:paymentId', loanController.deletePayment);
 
 router.post('/:id/apply-penalty', loanController.applyPenalty);
@@ -41,7 +42,6 @@ router.post('/:id/reject', loanController.rejectLoan);
 
 router.put('/:id/archive', loanController.archiveLoan);
 router.put('/:id/restore', loanController.restoreLoan);
-router.post('/:id/recalculate', loanController.recalculateLoan);
 
 // Catch-all for getting a single loan record
 router.get('/:id', loanController.getLoanById);

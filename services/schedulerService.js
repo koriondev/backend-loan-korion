@@ -28,12 +28,18 @@ const initScheduler = () => {
                     const settings = await Settings.findOne({ businessId: loan.businessId });
                     const penaltyData = penaltyEngine.calculatePenaltyV3(loan, settings);
 
-                    if (penaltyData.periodsOverdue > 0) {
-                        const overdueInstallments = (loan.schedule || []).filter(q => {
+                    if (penaltyData.periodsOverdue > 0 || loan.status === 'past_due') {
+                        // GT Consumption Logic: Lógica de Seguro de Tiempo
+                        const paidGTs = (loan.schedule || []).filter(q => q.status === 'paid' && q.notes && q.notes.includes("[Penalidad Aplicada]")).length;
+
+                        const allOverdue = (loan.schedule || []).filter(q => {
                             if (q.status === 'paid') return false;
                             const dueDate = new Date(q.dueDate);
                             return dueDate < now;
                         });
+
+                        // Consumimos los atrasos más antiguos con los pagos de GT que tengamos.
+                        const overdueInstallments = allOverdue.slice(paidGTs);
 
                         let daysLate = 0;
                         if (overdueInstallments.length > 0) {
@@ -42,21 +48,21 @@ const initScheduler = () => {
                             daysLate = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
                         }
 
-                        // Piloto Automático: Actualizar persistencia en DB
-                        loan.status = 'past_due';
+                        // Determinar estado final
+                        loan.status = overdueInstallments.length > 0 ? 'past_due' : 'active';
                         loan.daysLate = daysLate;
                         loan.installmentsOverdue = overdueInstallments.length;
                         loan.pendingPenalty = penaltyData.totalPenalty;
 
-                        await loan.save();
+                        await loan.save({ validateBeforeSave: false });
                         updatedCount++;
                     } else if (loan.status === 'past_due' && penaltyData.periodsOverdue === 0) {
-                        // Return to active if no longer overdue
+                        // Retornar a "Al día" si ya no hay mora
                         loan.status = 'active';
                         loan.daysLate = 0;
                         loan.installmentsOverdue = 0;
                         loan.pendingPenalty = 0;
-                        await loan.save();
+                        await loan.save({ validateBeforeSave: false });
                         updatedCount++;
                     }
                 } catch (loanError) {

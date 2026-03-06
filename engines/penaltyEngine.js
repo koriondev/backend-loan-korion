@@ -46,13 +46,17 @@ const calculateFixedPenaltyV3 = (loan, settings, referenceDate = null) => {
     const refDay = referenceDate ? new Date(referenceDate) : new Date();
     refDay.setHours(0, 0, 0, 0);
 
-    const overdueInstallments = loan.schedule.filter(inst => {
+    // GT Consumption Logic: Lógica de Seguro de Tiempo
+    const paidGTs = (loan.schedule || []).filter(q => q.status === 'paid' && q.notes && q.notes.includes("[Penalidad Aplicada]")).length;
+
+    const allOverdue = loan.schedule.filter(inst => {
         if (inst.status === 'paid') return false;
-        // Gana Tiempo: Si tiene penalidad aplicada, no cuenta como atrasada para el motor de mora (Time Insurance)
-        if (inst.notes && inst.notes.includes("[Penalidad Aplicada]")) return false;
         const dueDate = new Date(inst.dueDate);
         return dueDate < refDay;
     });
+
+    // Consumimos los atrasos más antiguos con los pagos de GT que tengamos.
+    const overdueInstallments = allOverdue.slice(paidGTs);
 
     if (overdueInstallments.length === 0) {
         return { totalPenalty: 0, breakdown: [], periodsOverdue: 0 };
@@ -104,13 +108,17 @@ const calculatePercentPenaltyV3 = (loan, settings, referenceDate = null) => {
     const refDay = referenceDate ? new Date(referenceDate) : new Date();
     refDay.setHours(0, 0, 0, 0);
 
-    const overdueInstallments = loan.schedule.filter(inst => {
+    // GT Consumption Logic: Lógica de Seguro de Tiempo
+    const paidGTs = (loan.schedule || []).filter(q => q.status === 'paid' && q.notes && q.notes.includes("[Penalidad Aplicada]")).length;
+
+    const allOverdue = loan.schedule.filter(inst => {
         if (inst.status === 'paid') return false;
-        // Gana Tiempo: Si tiene penalidad aplicada, no cuenta como atrasada para el motor de mora (Time Insurance)
-        if (inst.notes && inst.notes.includes("[Penalidad Aplicada]")) return false;
         const dueDate = new Date(inst.dueDate);
         return dueDate < refDay;
     });
+
+    // Consumimos los atrasos más antiguos con los pagos de GT que tengamos.
+    const overdueInstallments = allOverdue.slice(paidGTs);
 
     if (overdueInstallments.length === 0) {
         return { totalPenalty: 0, breakdown: [], periodsOverdue: 0 };

@@ -1391,6 +1391,75 @@ exports.restoreLoan = async (req, res) => {
     }
 };
 
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * RECALCULATE LOAN (On-demand)
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+exports.recalculateLoan = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const loan = await Loan.findById(id);
+        if (!loan) return res.status(404).json({ error: 'Préstamo no encontrado' });
+
+        const Settings = require('../models/Settings');
+        const penaltyEngine = require('../engines/penaltyEngine');
+        const settings = await Settings.findOne({ businessId: loan.businessId });
+
+        const now = new Date();
+        now.setHours(0, 0, 0, 0);
+
+        const penaltyData = penaltyEngine.calculatePenaltyV3(loan, settings);
+
+        // GT Consumption Logic: Lógica de Seguro de Tiempo
+        const paidGTs = (loan.schedule || []).filter(q => q.status === 'paid' && q.notes && q.notes.includes("[Penalidad Aplicada]")).length;
+
+        const allOverdue = (loan.schedule || []).filter(q => {
+            if (q.status === 'paid') return false;
+            const dueDate = new Date(q.dueDate);
+            return dueDate < now;
+        });
+
+        // Consumimos los atrasos más antiguos con los pagos de GT que tengamos.
+        const overdueInstallments = allOverdue.slice(paidGTs);
+
+        let daysLate = 0;
+        if (overdueInstallments.length > 0) {
+            const firstOverdue = overdueInstallments[0];
+            const diffTime = Math.abs(now - new Date(firstOverdue.dueDate));
+            daysLate = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        }
+
+        // Actualizar persistencia en DB
+        loan.status = overdueInstallments.length > 0 ? 'past_due' : 'active';
+        loan.daysLate = daysLate;
+        loan.installmentsOverdue = overdueInstallments.length;
+        loan.pendingPenalty = penaltyData.totalPenalty;
+
+        // Force check for "active" if it was past_due
+        if (overdueInstallments.length === 0 && loan.status === 'past_due') {
+            loan.status = 'active';
+        }
+
+        await loan.save({ validateBeforeSave: false });
+
+        res.json({
+            success: true,
+            message: "Préstamo recalculado exitosamente",
+            data: {
+                status: loan.status,
+                daysLate: loan.daysLate,
+                installmentsOverdue: loan.installmentsOverdue,
+                pendingPenalty: loan.pendingPenalty
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error recalculando préstamo:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
 module.exports = exports;
 
 /**
@@ -1432,7 +1501,7 @@ exports.recalculateLoan = async (req, res) => {
         loan.status = overdueInstallments.length > 0 ? 'past_due' : (loan.status === 'past_due' ? 'active' : loan.status);
         loan.daysLate = daysLate;
         loan.installmentsOverdue = overdueInstallments.length;
-        
+
         // Final penalty is engine calculation minus what's already paid
         const getVal = (v) => {
             if (v === null || v === undefined) return 0;
@@ -1445,10 +1514,10 @@ exports.recalculateLoan = async (req, res) => {
 
         await loan.save({ validateBeforeSave: false });
 
-        res.json({ 
-            success: true, 
-            message: "Balance recalculado exitosamente", 
-            loan 
+        res.json({
+            success: true,
+            message: "Balance recalculado exitosamente",
+            loan
         });
 
     } catch (error) {
