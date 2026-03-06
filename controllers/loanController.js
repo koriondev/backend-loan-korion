@@ -747,8 +747,8 @@ exports.applyPenalty = async (req, res) => {
         const loan = await Loan.findById(id).populate('clientId').session(session);
         if (!loan) throw new Error("Préstamo no encontrado");
 
-        // 1. Encontrar la primera cuota pendiente o parcial
-        const currentQuotaIndex = loan.schedule.findIndex(q => q.status === 'pending' || q.status === 'partial');
+        // 1. Encontrar la primera cuota pendiente, parcial o atrasada
+        const currentQuotaIndex = loan.schedule.findIndex(q => q.status === 'pending' || q.status === 'partial' || q.status === 'atrasado');
         if (currentQuotaIndex === -1) throw new Error("No hay cuotas pendientes para aplicar penalidad");
 
         const currentQuota = loan.schedule[currentQuotaIndex];
@@ -761,7 +761,6 @@ exports.applyPenalty = async (req, res) => {
 
         // Usar monto proveído por el usuario o usar fallback
         const penaltyAmount = req.body.amount !== undefined ? Number(req.body.amount) : fallbackPenalty;
-
         if (penaltyAmount < 0) throw new Error("Monto de penalidad no puede ser negativo");
 
         // 3. Lógica de Desplazamiento (Shift)
@@ -769,45 +768,80 @@ exports.applyPenalty = async (req, res) => {
         const originalPrincipal = rawPrincipalAmount;
         const originalInterest = rawInterestAmount;
 
-        // CORRECCIÓN: Ajustar el monto de la cuota actual para que no duplique capital en los totales
+        // Conservar pagos previos si existían (aunque Gana Tiempo suele aplicarse sobre cuotas sin pagar)
+        const previousPaid = getVal(currentQuota.paidAmount);
+        const previousInterestPaid = getVal(currentQuota.interestPaid);
+        const previousCapitalPaid = getVal(currentQuota.capitalPaid);
+
+        // Transformar cuota actual en penalidad
         loan.schedule[currentQuotaIndex].principalAmount = mongoose.Types.Decimal128.fromString("0.00");
-        loan.schedule[currentQuotaIndex].amount = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
         loan.schedule[currentQuotaIndex].interestAmount = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
-        loan.schedule[currentQuotaIndex].paidAmount = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
-        loan.schedule[currentQuotaIndex].interestPaid = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
-        loan.schedule[currentQuotaIndex].status = 'paid';
-        loan.schedule[currentQuotaIndex].paidDate = paymentDate;
+        loan.schedule[currentQuotaIndex].amount = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
+
+        // Si ya se había pagado algo, se mantiene como pago de esa penalidad
+        loan.schedule[currentQuotaIndex].paidAmount = mongoose.Types.Decimal128.fromString(previousPaid.toFixed(2));
+        loan.schedule[currentQuotaIndex].interestPaid = mongoose.Types.Decimal128.fromString(previousPaid.toFixed(2));
+        loan.schedule[currentQuotaIndex].capitalPaid = mongoose.Types.Decimal128.fromString("0.00");
+
+        // Si el monto pagado previamente es >= al monto de la penalidad, se marca como pagada
+        if (previousPaid >= (penaltyAmount - 0.05)) {
+            loan.schedule[currentQuotaIndex].status = 'paid';
+            if (!loan.schedule[currentQuotaIndex].paidDate) loan.schedule[currentQuotaIndex].paidDate = paymentDate;
+        } else if (previousPaid > 0) {
+            loan.schedule[currentQuotaIndex].status = 'partial';
+        } else {
+            // Si es un "Gana Tiempo" procesado por el modal que dispara un pago simultáneo:
+            loan.schedule[currentQuotaIndex].status = 'paid';
+            loan.schedule[currentQuotaIndex].paidAmount = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
+            loan.schedule[currentQuotaIndex].interestPaid = mongoose.Types.Decimal128.fromString(penaltyAmount.toFixed(2));
+            loan.schedule[currentQuotaIndex].paidDate = paymentDate;
+        }
+
         loan.schedule[currentQuotaIndex].notes = (loan.schedule[currentQuotaIndex].notes || "") + " [Penalidad Aplicada]";
 
         // 4. Rodar fechas de las cuotas futuras
-        // Desde la cuota actual + 1 en adelante, sumamos un periodo
         for (let i = currentQuotaIndex + 1; i < loan.schedule.length; i++) {
-            const quota = loan.schedule[i];
-            quota.dueDate = amortizationEngine.getNextDueDate(quota.dueDate, loan.frequency);
+            loan.schedule[i].dueDate = amortizationEngine.getNextDueDate(loan.schedule[i].dueDate, loan.frequency);
         }
 
         // 5. Agregar nueva cuota al final
         const lastQuota = loan.schedule[loan.schedule.length - 1];
         const newDueDate = amortizationEngine.getNextDueDate(lastQuota.dueDate, loan.frequency);
 
+        // Restaurar el capital que "desapareció" de la cuota penalizada
+        // Si la cuota penalizada tenía pagos a capital, debemos recuperarlos
+        const capitalToRestore = getVal(originalPrincipal) - previousCapitalPaid;
+
         loan.schedule.push({
             number: loan.schedule.length + 1,
             dueDate: newDueDate,
-            amount: mongoose.Types.Decimal128.fromString((parseFloat(originalPrincipal.toString()) + parseFloat(originalInterest.toString())).toFixed(2)),
-            principalAmount: originalPrincipal,
+            amount: mongoose.Types.Decimal128.fromString((capitalToRestore + getVal(originalInterest)).toFixed(2)),
+            principalAmount: mongoose.Types.Decimal128.fromString(capitalToRestore.toFixed(2)),
             interestAmount: originalInterest,
-            balance: lastQuota.balance, // El balance se mantiene igual ya que no se amortizó capital
+            balance: lastQuota.balance,
             status: 'pending',
             daysOfGrace: 0
         });
 
-        // 6. Actualizar totales del préstamo (el interés total sube por la penalidad)
+        // 6. Actualizar totales del préstamo
         if (!loan.financialModel) {
             loan.financialModel = { interestTotal: 0, interestPaid: 0, interestPending: 0 };
         }
-        loan.financialModel.interestTotal = (parseFloat(loan.financialModel.interestTotal || 0) + penaltyAmount);
-        loan.financialModel.interestPaid = (parseFloat(loan.financialModel.interestPaid || 0) + penaltyAmount);
-        loan.duration += 1;
+
+        // El interés total sube porque la penalidad es "nuevo interés"
+        loan.financialModel.interestTotal = (getVal(loan.financialModel.interestTotal) + penaltyAmount);
+
+        // Si ya estaba pagada o se pagó ahora, sube el pagado
+        if (loan.schedule[currentQuotaIndex].status === 'paid') {
+            loan.financialModel.interestPaid = (getVal(loan.financialModel.interestPaid) + penaltyAmount - previousInterestPaid);
+        } else {
+            loan.financialModel.interestPaid = (getVal(loan.financialModel.interestPaid) - previousInterestPaid);
+        }
+
+        // Re-ajustar capital corriente si se devolvió capital pagado
+        loan.currentCapital += previousCapitalPaid;
+
+        loan.duration = loan.schedule.length;
 
         loan.markModified('schedule');
         loan.markModified('financialModel');
@@ -1358,3 +1392,67 @@ exports.restoreLoan = async (req, res) => {
 };
 
 module.exports = exports;
+
+/**
+ * RECALCULATE LOAN BALANCE (On-demand)
+ * Updates loan status, days late, and pending penalties based on current date.
+ */
+exports.recalculateLoan = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const Loan = require('../models/Loan');
+        const Settings = require('../models/Settings');
+        const penaltyEngine = require('../engines/penaltyEngine');
+
+        const loan = await Loan.findById(id);
+        if (!loan) return res.status(404).json({ error: 'Préstamo no encontrado' });
+
+        const settings = await Settings.findOne({ businessId: loan.businessId });
+        const penaltyData = penaltyEngine.calculatePenaltyV3(loan, settings);
+
+        const now = new Date();
+        now.setHours(0, 0, 0, 0);
+
+        const overdueInstallments = (loan.schedule || []).filter(q => {
+            if (q.status === 'paid') return false;
+            // Respect Time Insurance (Gana Tiempo)
+            if (q.notes && q.notes.includes("[Penalidad Aplicada]")) return false;
+            const dueDate = new Date(q.dueDate);
+            return dueDate < now;
+        });
+
+        let daysLate = 0;
+        if (overdueInstallments.length > 0) {
+            const firstOverdue = overdueInstallments[0];
+            const diffTime = Math.abs(now - new Date(firstOverdue.dueDate));
+            daysLate = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        }
+
+        // Update loan metrics
+        loan.status = overdueInstallments.length > 0 ? 'past_due' : (loan.status === 'past_due' ? 'active' : loan.status);
+        loan.daysLate = daysLate;
+        loan.installmentsOverdue = overdueInstallments.length;
+        
+        // Final penalty is engine calculation minus what's already paid
+        const getVal = (v) => {
+            if (v === null || v === undefined) return 0;
+            if (typeof v === 'object' && v.$numberDecimal) return parseFloat(v.$numberDecimal);
+            if (typeof v === 'object' && v.constructor.name === 'Decimal128') return parseFloat(v.toString());
+            return parseFloat(v) || 0;
+        };
+        const paidPenalty = getVal(loan.penaltyConfig?.paidPenalty || 0);
+        loan.pendingPenalty = Math.max(0, penaltyData.totalPenalty - paidPenalty);
+
+        await loan.save({ validateBeforeSave: false });
+
+        res.json({ 
+            success: true, 
+            message: "Balance recalculado exitosamente", 
+            loan 
+        });
+
+    } catch (error) {
+        console.error('❌ Error recalculando préstamo:', error);
+        res.status(500).json({ error: error.message });
+    }
+};

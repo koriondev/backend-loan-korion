@@ -48,6 +48,8 @@ const calculateFixedPenaltyV3 = (loan, settings, referenceDate = null) => {
 
     const overdueInstallments = loan.schedule.filter(inst => {
         if (inst.status === 'paid') return false;
+        // Gana Tiempo: Si tiene penalidad aplicada, no cuenta como atrasada para el motor de mora (Time Insurance)
+        if (inst.notes && inst.notes.includes("[Penalidad Aplicada]")) return false;
         const dueDate = new Date(inst.dueDate);
         return dueDate < refDay;
     });
@@ -61,12 +63,13 @@ const calculateFixedPenaltyV3 = (loan, settings, referenceDate = null) => {
 
     if (applyPerInstallment) {
         overdueInstallments.forEach(inst => {
-            const periodsOverdue = getOverduePeriods(inst.dueDate, periodMode, gracePeriod, settings, refDay);
-            const penaltyForInst = value * periodsOverdue;
+            const periods = getOverduePeriods(inst.dueDate, periodMode, gracePeriod, settings, refDay);
+            const penaltyForInst = value * periods;
 
             breakdown.push({
                 installmentNumber: inst.number,
                 dueDate: inst.dueDate,
+                periodsOverdue: periods,
                 penalty: penaltyForInst
             });
 
@@ -74,13 +77,13 @@ const calculateFixedPenaltyV3 = (loan, settings, referenceDate = null) => {
         });
     } else {
         const oldestOverdue = overdueInstallments[0];
-        const periodsOverdue = getOverduePeriods(oldestOverdue.dueDate, periodMode, gracePeriod, settings, refDay);
-        totalPenalty = value * periodsOverdue;
+        const periods = getOverduePeriods(oldestOverdue.dueDate, periodMode, gracePeriod, settings, refDay);
+        totalPenalty = value * periods;
 
         breakdown.push({
             installmentNumber: oldestOverdue.number,
             dueDate: oldestOverdue.dueDate,
-            periodsOverdue: periodsOverdue,
+            periodsOverdue: periods,
             penalty: totalPenalty
         });
     }
@@ -88,9 +91,9 @@ const calculateFixedPenaltyV3 = (loan, settings, referenceDate = null) => {
     if (maxPenalty && totalPenalty > maxPenalty) totalPenalty = maxPenalty;
 
     return {
-        totalPenalty,
+        totalPenalty: parseFloat(totalPenalty.toFixed(2)),
         breakdown,
-        periodsOverdue: breakdown.reduce((sum, b) => sum + (b.periodsOverdue || 0), 0)
+        periodsOverdue: breakdown.reduce((sum, b) => sum + (getVal(b.periodsOverdue) || 0), 0)
     };
 };
 
@@ -103,6 +106,8 @@ const calculatePercentPenaltyV3 = (loan, settings, referenceDate = null) => {
 
     const overdueInstallments = loan.schedule.filter(inst => {
         if (inst.status === 'paid') return false;
+        // Gana Tiempo: Si tiene penalidad aplicada, no cuenta como atrasada para el motor de mora (Time Insurance)
+        if (inst.notes && inst.notes.includes("[Penalidad Aplicada]")) return false;
         const dueDate = new Date(inst.dueDate);
         return dueDate < refDay;
     });
