@@ -26,6 +26,7 @@ router.post('/pay', loanController.payLoan);
 router.post('/preview', loanController.previewLoan);
 
 router.get('/', loanController.getLoans);
+router.post('/export-audit', loanController.exportAudit);
 
 router.post('/',
     subscriptionMiddleware.checkSubscription,

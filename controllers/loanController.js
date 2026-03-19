@@ -15,6 +15,7 @@ const Settings = require('../models/Settings');
 const { generateScheduleV3, getNextDueDate } = require('../engines/amortizationEngine');
 const { calculatePenaltyV3 } = require('../engines/penaltyEngine');
 const { distributePayment, applyPaymentToLoan, validatePaymentAmount } = require('../engines/paymentEngine');
+const XLSX = require('xlsx');
 const financeController = require('./financeController');
 const eventBus = require('../utils/eventBus');
 
@@ -1529,5 +1530,106 @@ exports.recalculateLoan = async (req, res) => {
     } catch (error) {
         console.error('❌ Error recalculando préstamo:', error);
         res.status(500).json({ error: error.message });
+    }
+};
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * RECONCILIATION EXCEL EXPORT
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+exports.exportAudit = async (req, res) => {
+    try {
+        const { loanIds } = req.body;
+        if (!loanIds || !Array.isArray(loanIds)) {
+            return res.status(400).json({ error: 'IDs de préstamos no válidos' });
+        }
+
+        const Loan = require('../models/Loan');
+        const Transaction = require('../models/Transaction');
+
+        const loans = await Loan.find({ _id: { $in: loanIds } }).populate('clientId');
+
+        const getV = (v) => {
+            if (v === null || v === undefined) return 0;
+            if (typeof v === 'object' && v.$numberDecimal) return parseFloat(v.$numberDecimal);
+            if (typeof v === 'object' && v.constructor?.name === 'Decimal128') return parseFloat(v.toString());
+            return parseFloat(v) || 0;
+        };
+
+        const excelData = [];
+
+        for (const loan of loans) {
+            const shortId = loan._id.toString().slice(-6).toUpperCase();
+
+            // 1. Fetch all associated transactions
+            const txs = await Transaction.find({
+                $or: [
+                    { loan: loan._id },
+                    { loanV2: loan._id },
+                    { loanV3: loan._id },
+                    { "metadata.loanId": loan._id.toString() }
+                ],
+                type: 'in_payment'
+            }).sort({ date: 1 });
+
+            const totalPayments = txs.reduce((sum, t) => sum + (t.amount || 0), 0);
+
+            // 2. Audit Logic: Recalculate theoretical balance from contract + penalties
+            const schedule = loan.schedule || [];
+            const regularQuotas = schedule.filter(q => !(q.notes && q.notes.includes("[Penalidad Aplicada]")));
+            const qAmt = regularQuotas.length > 0 ? getV(regularQuotas[0].amount) : 0;
+
+            // Total Penalties (Manual/Shifts)
+            const sumPenalties = schedule.filter(q => q.notes && q.notes.includes("[Penalidad Aplicada]"))
+                .reduce((s, q) => s + getV(q.amount), 0);
+
+            const initialDur = loan.initialDuration || (schedule.length - schedule.filter(q => q.notes && q.notes.includes("[Penalidad Aplicada]")).length);
+
+            // Expected Contract Total = P + I + Penalties
+            const expectedTotalDebt = (qAmt * initialDur) + sumPenalties;
+
+            // Balance Factura = (Contract Total) - (Payments)
+            const balanceFactura = Math.max(0, expectedTotalDebt - totalPayments);
+
+            // Balance Web = Current stats in DB
+            const balanceWeb = getV(loan.currentCapital) + getV(loan.financialModel?.interestPending);
+
+            excelData.push({
+                "Cliente": loan.clientId?.fullName || loan.clientId?.name || 'Desconocido',
+                "Cédula": loan.clientId?.cedula || 'N/A',
+                "ID Préstamo": shortId,
+                "Fecha Inicio": new Date(loan.startDate).toLocaleDateString('es-DO'),
+                "Monto Original": loan.amount,
+                "Tasa %": loan.interestRateMonthly || 0,
+                "Cuotas Totales": schedule.length,
+                "Pagos Totales (DB)": totalPayments.toFixed(2),
+                "Total Contrato (P+I+Pen)": expectedTotalDebt.toFixed(2),
+                "MONTO ADEUDADO (WEB)": balanceWeb.toFixed(2),
+                "MONTO ADEUDADO (FACTURA)": balanceFactura.toFixed(2),
+                "DIFERENCIA": (balanceWeb - balanceFactura).toFixed(2),
+                "Estado Web": (loan.status || 'active').toUpperCase(),
+                "Atraso (Días)": loan.daysLate || 0
+            });
+        }
+
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.json_to_sheet(excelData);
+
+        // Autofit columns (basic attempt)
+        const wscols = Object.keys(excelData[0] || {}).map(k => ({ wch: Math.max(k.length, 12) + 5 }));
+        ws['!cols'] = wscols;
+
+        XLSX.utils.book_append_sheet(wb, ws, "Reconciliacion");
+
+        const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=Auditoria_Reconciliacion_${new Date().toISOString().split('T')[0]}.xlsx`);
+        res.send(buffer);
+
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
     }
 };
