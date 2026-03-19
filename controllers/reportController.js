@@ -150,7 +150,7 @@ exports.getGeneralStats = async (req, res) => {
       status: { $in: ['active', 'past_due'] },
       ...bizFilter
     })
-      .populate('clientId', 'name lastName')
+      .populate('clientId', 'name firstName lastName')
       .lean();
 
     let pendingInstallments = [];
@@ -161,7 +161,14 @@ exports.getGeneralStats = async (req, res) => {
 
       pendingInstallments.push({
         loanId: loan._id,
-        clientName: `${loan.clientId?.name || ''} ${loan.clientId?.lastName || ''}`.trim(),
+        clientName: (() => {
+          const c = loan.clientId;
+          if (!c) return 'Cliente';
+          // If firstName field exists, build from parts to avoid duplication
+          if (c.firstName) return `${c.firstName} ${c.lastName || ''}`.trim();
+          // Legacy: name already contains the full name, don't append lastName
+          return (c.name || 'Cliente').trim();
+        })(),
         dueDate: nextInst.dueDate,
         amount: nextInst.amount ? nextInst.amount.toString() : 0,
         principalAmount: nextInst.principalAmount ? nextInst.principalAmount.toString() : 0,
