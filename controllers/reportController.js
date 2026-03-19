@@ -155,27 +155,27 @@ exports.getGeneralStats = async (req, res) => {
 
     let pendingInstallments = [];
     upcomingLoans.forEach(loan => {
-      loan.schedule.forEach(inst => {
-        if (inst.status !== 'paid') {
-          pendingInstallments.push({
-            loanId: loan._id,
-            clientName: `${loan.clientId?.name || ''} ${loan.clientId?.lastName || ''}`.trim(),
-            dueDate: inst.dueDate,
-            amount: inst.amount ? inst.amount.toString() : 0,
-            principalAmount: inst.principalAmount ? inst.principalAmount.toString() : 0,
-            interestAmount: inst.interestAmount ? inst.interestAmount.toString() : 0,
-            status: inst.status,
-            number: inst.number,
-            totalInstallments: loan.schedule.length,
-            frequency: loan.frequency,
-            balance: inst.balance ? inst.balance.toString() : 0,
-            loanBalance: loan.realBalance || loan.balance || 0
-          });
-        }
+      // Take only the FIRST non-paid installment per loan (the next upcoming one)
+      const nextInst = loan.schedule.find(inst => inst.status !== 'paid');
+      if (!nextInst) return;
+
+      pendingInstallments.push({
+        loanId: loan._id,
+        clientName: `${loan.clientId?.name || ''} ${loan.clientId?.lastName || ''}`.trim(),
+        dueDate: nextInst.dueDate,
+        amount: nextInst.amount ? nextInst.amount.toString() : 0,
+        principalAmount: nextInst.principalAmount ? nextInst.principalAmount.toString() : 0,
+        interestAmount: nextInst.interestAmount ? nextInst.interestAmount.toString() : 0,
+        status: nextInst.status,
+        number: nextInst.number,
+        totalInstallments: loan.schedule.length,
+        frequency: loan.frequency,
+        balance: nextInst.balance ? nextInst.balance.toString() : 0,
+        loanBalance: loan.realBalance || loan.balance || 0
       });
     });
 
-    // Ordenar por fecha y tomar los primeros 10
+    // Ordenar por fecha (los más próximos primero) y tomar los primeros 10
     pendingInstallments.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
     pendingInstallments = pendingInstallments.slice(0, 10);
 
