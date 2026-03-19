@@ -3,6 +3,7 @@ const Loan = require('../models/Loan');
 const Transaction = require('../models/Transaction');
 const Wallet = require('../models/Wallet');
 const Settings = require('../models/Settings');
+const Business = require('../models/Business');
 const aiService = require('../services/aiService');
 
 exports.getGeneralStats = async (req, res) => {
@@ -137,19 +138,106 @@ exports.getGeneralStats = async (req, res) => {
       });
     }
 
-    // --- 5. CONTEO DE CLIENTES ---
-    const clientsCount = await require('../models/Client').countDocuments({ businessId: businessIdStr });
+    // --- 5. CONTEO DE CLIENTES Y LÍMITES DE NEGOCIO ---
+    const [clientsCount, business] = await Promise.all([
+      require('../models/Client').countDocuments({ businessId: businessIdStr }),
+      Business.findById(businessId).lean()
+    ]);
+
+    // --- 6. PRÓXIMOS COBROS (PENDING INSTALLMENTS) ---
+    // Buscamos cuotas pendientes de hoy y futuro (o atrasadas)
+    const upcomingLoans = await Loan.find({
+      status: { $in: ['active', 'past_due'] },
+      ...bizFilter
+    })
+      .populate('clientId', 'name lastName')
+      .lean();
+
+    let pendingInstallments = [];
+    upcomingLoans.forEach(loan => {
+      loan.schedule.forEach(inst => {
+        if (inst.status !== 'paid') {
+          pendingInstallments.push({
+            loanId: loan._id,
+            clientName: `${loan.clientId?.name || ''} ${loan.clientId?.lastName || ''}`.trim(),
+            dueDate: inst.dueDate,
+            amount: inst.amount ? inst.amount.toString() : 0,
+            principalAmount: inst.principalAmount ? inst.principalAmount.toString() : 0,
+            interestAmount: inst.interestAmount ? inst.interestAmount.toString() : 0,
+            status: inst.status,
+            number: inst.number,
+            totalInstallments: loan.schedule.length,
+            frequency: loan.frequency,
+            balance: inst.balance ? inst.balance.toString() : 0,
+            loanBalance: loan.realBalance || loan.balance || 0
+          });
+        }
+      });
+    });
+
+    // Ordenar por fecha y tomar los primeros 10
+    pendingInstallments.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+    pendingInstallments = pendingInstallments.slice(0, 10);
+
+    // --- 7. DATOS DEL GRÁFICO (ÚLTIMOS 12 MESES) ---
+    const twelveMonthsAgo = new Date();
+    twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 11);
+    twelveMonthsAgo.setDate(1);
+    twelveMonthsAgo.setHours(0, 0, 0, 0);
+
+    const monthlyStats = await Transaction.aggregate([
+      {
+        $match: {
+          ...bizFilter,
+          type: 'in_payment',
+          date: { $gte: twelveMonthsAgo }
+        }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m", date: "$date" } },
+          capital: { $sum: { $ifNull: ["$metadata.breakdown.appliedCapital", "$amount"] } },
+          interest: { $sum: { $ifNull: ["$metadata.breakdown.appliedInterest", 0] } },
+          mora: { $sum: { $ifNull: ["$metadata.breakdown.appliedPenalty", 0] } }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    const monthNames = ['ene.', 'feb.', 'mar.', 'abr.', 'may.', 'jun.', 'jul.', 'ago.', 'sep.', 'oct.', 'nov.', 'dic.'];
+    const formattedMonthlyData = [];
+
+    for (let i = 0; i < 12; i++) {
+      const d = new Date();
+      d.setMonth(d.getMonth() - (11 - i));
+      const dateKey = d.toISOString().slice(0, 7); // "YYYY-MM"
+      const found = monthlyStats.find(s => s._id === dateKey);
+
+      formattedMonthlyData.push({
+        name: monthNames[d.getMonth()],
+        Capital: found ? found.capital : 0,
+        Interés: found ? found.interest : 0,
+        Mora: found ? found.mora : 0,
+        Seguro: 0,
+        Otros: 0,
+        "Gastos legales": 0,
+        "series-7": 0
+      });
+    }
 
     res.json({
-      capitalInStreet: stats.capitalInStreet, // Capital en la Calle
-      realGain: realGain,                     // Ganancia Real (Intereses + Moras cobrados)
-      pendingTotal: stats.pendingTotal,       // Saldo Pendiente Total (Lo que falta por cobrar)
-      businessValue: totalLiquidity + stats.pendingTotal, // Valor Total del Negocio
-      capitalRecovered: perf.totalCapitalPaid, // Capital Recuperado (Histórico)
+      capitalInStreet: stats.capitalInStreet,
+      realGain: realGain,
+      pendingTotal: stats.pendingTotal,
+      businessValue: totalLiquidity + stats.pendingTotal,
+      capitalRecovered: perf.totalCapitalPaid,
       lateLoans: stats.lateLoans,
       availableCapital: totalLiquidity,
       clientsCount,
-      chartData: formattedChartData
+      limits: business ? business.limits : null,
+      chartData: formattedMonthlyData, // Ahora enviamos 12 meses
+      weeklyChartData: formattedChartData, // Mantenemos la anterior por si acaso
+      pendingInstallments
     });
 
   } catch (error) {

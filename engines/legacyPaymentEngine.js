@@ -78,14 +78,14 @@ const distributePayment = (loan, amount, currentPenalty) => {
         };
 
         // 2a. Pay Interest
-        let pendingInterest = (inst.interest || 0) - (inst.interestPaid || 0);
+        let pendingInterest = getVal(inst.interest) - getVal(inst.interestPaid);
 
         // EXTRA LOGIC FOR REDITO: Do not pre-pay future interest periods if up to date
         if (loan.lendingType === 'redito' && inst.number > activeReditoInstallmentNum) {
             pendingInterest = 0;
         }
 
-        if (pendingInterest > 0) {
+        if (pendingInterest > 0.01) {
             const interestPayment = Math.min(remainingPayment, pendingInterest);
             installmentUpdate.interestPaid = interestPayment;
             distribution.appliedInterest += interestPayment;
@@ -93,15 +93,15 @@ const distributePayment = (loan, amount, currentPenalty) => {
         }
 
         // 2b. Pay Capital
-        if (remainingPayment > 0) {
-            let pendingCapital = (inst.capital || 0) - (inst.capitalPaid || 0);
+        if (remainingPayment > 0.01) {
+            let pendingCapital = getVal(inst.capital) - getVal(inst.capitalPaid);
 
             // Special case for Redito: allow capital payment even if capital in installment is 0
-            if (loan.lendingType === 'redito' && pendingCapital === 0 && remainingPayment > 0) {
+            if (loan.lendingType === 'redito' && pendingCapital === 0 && remainingPayment > 0.01) {
                 pendingCapital = remainingPayment; // Allow any amount to capital
             }
 
-            if (pendingCapital > 0) {
+            if (pendingCapital > 0.01) {
                 const capitalPayment = Math.min(remainingPayment, pendingCapital);
                 installmentUpdate.capitalPaid = capitalPayment;
                 distribution.appliedCapital += capitalPayment;
@@ -110,22 +110,22 @@ const distributePayment = (loan, amount, currentPenalty) => {
         }
 
         // Determine new status
-        const totalPaid = (inst.paidAmount || 0) + installmentUpdate.interestPaid + installmentUpdate.capitalPaid;
-        const totalInterestPaid = (inst.interestPaid || 0) + installmentUpdate.interestPaid;
-        const totalCapitalPaid = (inst.capitalPaid || 0) + installmentUpdate.capitalPaid;
+        const totalPaid = getVal(inst.paidAmount) + installmentUpdate.interestPaid + installmentUpdate.capitalPaid;
+        const totalInterestPaid = getVal(inst.interestPaid) + installmentUpdate.interestPaid;
+        const totalCapitalPaid = getVal(inst.capitalPaid) + installmentUpdate.capitalPaid;
 
         if (loan.lendingType === 'redito') {
             // For Redito, only interest matters for installment status
-            if (totalInterestPaid >= (inst.interest - 0.1)) {
+            if (totalInterestPaid >= (getVal(inst.interest) - 0.1)) {
                 installmentUpdate.newStatus = 'paid';
-            } else if (totalInterestPaid > 0) {
+            } else if (totalInterestPaid > 0.01) {
                 installmentUpdate.newStatus = 'partial';
             }
         } else {
             // For Fixed/Amortization, both interest and capital must be paid
-            if (totalInterestPaid >= (inst.interest - 0.1) && totalCapitalPaid >= (inst.capital - 0.1)) {
+            if (totalInterestPaid >= (getVal(inst.interest) - 0.1) && totalCapitalPaid >= (getVal(inst.capital) - 0.1)) {
                 installmentUpdate.newStatus = 'paid';
-            } else if (totalPaid > 0) {
+            } else if (totalPaid > 0.01) {
                 installmentUpdate.newStatus = 'partial';
             }
         }
@@ -134,10 +134,10 @@ const distributePayment = (loan, amount, currentPenalty) => {
     }
 
     // Check if loan is fully paid
-    const totalPrincipalPaid = loan.schedule.reduce((sum, inst) => sum + (inst.capitalPaid || 0), 0) + distribution.appliedCapital;
+    const totalPrincipalPaid = loan.schedule.reduce((sum, inst) => sum + getVal(inst.capitalPaid), 0) + distribution.appliedCapital;
 
     if (loan.lendingType === 'redito') {
-        distribution.isFullPayoff = totalPrincipalPaid >= (loan.amount - 0.1);
+        distribution.isFullPayoff = totalPrincipalPaid >= (getVal(loan.amount) - 0.1);
     } else {
         const allInstallmentsPaid = loan.schedule.every(inst => {
             const update = distribution.installmentUpdates.find(u => u.number === inst.number);
@@ -239,13 +239,13 @@ const validatePaymentAmount = (loan, amount, currentPenalty) => {
     }
 
     // Calculate total debt
-    const pendingPenalty = Math.max(0, currentPenalty.totalPenalty - (loan.penaltyConfig.paidPenalty || 0));
+    const pendingPenalty = Math.max(0, getVal(currentPenalty.totalPenalty) - getVal(loan.penaltyConfig?.paidPenalty));
     const pendingInterest = loan.schedule.reduce((sum, inst) => {
-        return sum + ((inst.interest || 0) - (inst.interestPaid || 0));
+        return sum + (getVal(inst.interest) - getVal(inst.interestPaid));
     }, 0);
     const pendingCapital = loan.lendingType === 'redito'
-        ? loan.currentCapital
-        : loan.schedule.reduce((sum, inst) => sum + ((inst.capital || 0) - (inst.capitalPaid || 0)), 0);
+        ? getVal(loan.currentCapital)
+        : loan.schedule.reduce((sum, inst) => sum + (getVal(inst.capital) - getVal(inst.capitalPaid)), 0);
 
     const totalDebt = pendingPenalty + pendingInterest + pendingCapital;
 

@@ -1,11 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const loanController = require('../controllers/loanController');
+const auditController = require('../controllers/auditController');
 const authMiddleware = require('../middleware/authMiddleware');
 const subscriptionMiddleware = require('../middleware/subscriptionMiddleware');
 
 // All routes require authentication
 router.use(authMiddleware);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDIT ROUTES
+// ═══════════════════════════════════════════════════════════════════════════
+router.get('/audit/pending', auditController.getPendingAudits);
+router.post('/audit/report', auditController.reportAudit);
+router.get('/audit/discrepancies', auditController.getDiscrepancies);
+router.put('/audit/discrepancies/:id/corrected', auditController.markAsCorrected);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LOAN COLLECTION ROUTES

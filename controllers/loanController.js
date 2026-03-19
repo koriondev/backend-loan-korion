@@ -12,7 +12,7 @@ const PaymentV2 = require('../models/PaymentV2');
 const Client = require('../models/Client');
 const Wallet = require('../models/Wallet');
 const Settings = require('../models/Settings');
-const { generateScheduleV3 } = require('../engines/amortizationEngine');
+const { generateScheduleV3, getNextDueDate } = require('../engines/amortizationEngine');
 const { calculatePenaltyV3 } = require('../engines/penaltyEngine');
 const { distributePayment, applyPaymentToLoan, validatePaymentAmount } = require('../engines/paymentEngine');
 const financeController = require('./financeController');
@@ -53,6 +53,9 @@ exports.createLoan = async (req, res) => {
         // Get settings for working days
         const settings = await Settings.findOne({ businessId: req.user.businessId }).session(session);
 
+        const effectiveStartDate = startDate || new Date();
+        const effectiveFirstPaymentDate = firstPaymentDate || getNextDueDate(effectiveStartDate, frequency);
+
         // Generate schedule V3
         const { schedule, summary } = generateScheduleV3({
             amount: parsedAmount,
@@ -61,8 +64,8 @@ exports.createLoan = async (req, res) => {
             frequency,
             frequencyMode,
             lendingType,
-            startDate: startDate || new Date(),
-            firstPaymentDate: firstPaymentDate || new Date()
+            startDate: effectiveStartDate,
+            firstPaymentDate: effectiveFirstPaymentDate
         });
 
         // Extract wallet currency first
@@ -84,8 +87,8 @@ exports.createLoan = async (req, res) => {
             initialDuration: parsedDuration,
             frequency,
             frequencyMode,
-            startDate: startDate || new Date(),
-            firstPaymentDate: firstPaymentDate || new Date(),
+            startDate: effectiveStartDate,
+            firstPaymentDate: effectiveFirstPaymentDate,
             gracePeriod: gracePeriod || 0,
             initialPaidInstallments: initialPaidInstallments || 0,
 
@@ -565,6 +568,9 @@ exports.previewLoan = async (req, res) => {
 
         const effectiveRate = interestRateMonthly || interestRate;
 
+        const effectiveStartDate = startDate || new Date();
+        const effectiveFirstPaymentDate = firstPaymentDate || getNextDueDate(effectiveStartDate, frequency);
+
         // Generate schedule V3
         const result = generateScheduleV3({
             amount: parseFloat(amount),
@@ -573,8 +579,8 @@ exports.previewLoan = async (req, res) => {
             frequency,
             frequencyMode,
             lendingType,
-            startDate: startDate || new Date(),
-            firstPaymentDate: firstPaymentDate || new Date()
+            startDate: effectiveStartDate,
+            firstPaymentDate: effectiveFirstPaymentDate
         });
 
         console.log("SCHEDULE GENERATED, FIRST ITEM:", result.schedule[0]);
