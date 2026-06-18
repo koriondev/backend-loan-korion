@@ -6,7 +6,8 @@ const authMiddleware = (req, res, next) => {
   if (!token) return res.status(401).json({ message: 'Acceso denegado.' });
 
   try {
-    const secret = process.env.JWT_SECRET || 'korion_secret_key_123';
+    const secret = process.env.JWT_SECRET;
+    if (!secret) throw new Error('JWT_SECRET no configurado');
     const verified = jwt.verify(token, secret);
     req.user = verified; // Aquí viene { id, role, businessId }
 
@@ -23,7 +24,7 @@ const authMiddleware = (req, res, next) => {
 
     next();
   } catch (error) {
-    res.status(400).json({ message: 'Token inválido.' });
+    res.status(401).json({ message: 'Token inválido o expirado.' });
   }
 };
 

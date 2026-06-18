@@ -53,8 +53,8 @@ router.post('/pre-login', async (req, res) => {
     const user = await User.findOne({ email });
 
     if (!user) {
-      console.log(`Pre-login check failed: User ${email} not found`);
-      return res.status(404).json({ message: "Usuario no encontrado" });
+      // No revelar si el email existe o no (previene user enumeration)
+      return res.status(200).json({ requiresSetup: false, name: null, activationToken: null, notFound: true });
     }
 
     const requiresSetup = user.status === 'pending_activation' || !user.password || user.password === '';

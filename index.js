@@ -3,6 +3,8 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const path = require('path');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 // --- 1. IMPORTAR RUTAS ---
 const productRoutes = require('./routes/products');
@@ -19,6 +21,31 @@ const userRoutes = require('./routes/users');
 const platformRoutes = require('./routes/platform'); // <--- ESTA FALTABA O ESTABA MAL
 
 const app = express();
+
+// --- SEGURIDAD: Helmet (Cabeceras HTTP seguras) ---
+app.use(helmet({
+  contentSecurityPolicy: false, // Deshabilitar CSP para no romper el frontend; configurar por separado si se necesita
+}));
+
+// --- SEGURIDAD: Rate Limiting Global ---
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 300, // Máximo 300 peticiones por IP cada 15 minutos
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas peticiones. Por favor, intenta de nuevo en 15 minutos.' }
+});
+app.use('/api/', globalLimiter);
+
+// --- SEGURIDAD: Rate Limiting estricto para autenticación ---
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 20, // Máximo 20 intentos de login por IP cada 15 minutos
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos de autenticación. Por favor, intenta de nuevo en 15 minutos.' }
+});
+app.use('/api/auth/', authLimiter);
 
 // Middlewares and Security
 const allowedOrigins = process.env.ALLOWED_ORIGINS
