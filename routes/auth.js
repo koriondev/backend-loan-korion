@@ -70,6 +70,13 @@ router.post('/pre-login', async (req, res) => {
       activationToken = jwt.sign({ email: user.email, action: 'activate' }, JWT_SECRET, { expiresIn: '15m' });
     }
 
+    console.log('DEBUG: typeof res =', typeof res);
+    console.log('DEBUG: res keys =', res ? Object.keys(res).slice(0, 10) : 'none');
+    console.log('DEBUG: res.req exists =', !!(res && res.req));
+    if (res && res.req) {
+      console.log('DEBUG: res.req.headers exists =', !!res.req.headers);
+    }
+
     res.json({
       requiresSetup,
       name: user.name,
