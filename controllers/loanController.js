@@ -95,9 +95,27 @@ exports.createLoan = async (req, res) => {
 
             // FUNDING & ATTRIBUTION
             fundingWalletId: req.body.fundingWalletId,
-            investorId: req.body.investorId,
-            managerId: req.body.managerId,
-            revenueShare: req.body.revenueShare,
+            investorId: fundingWallet.ownerId, // Always taken from the wallet, not the request body
+
+            // ─────────────────────────────────────────────────────────────────────
+            // REVENUE SHARE — Calculated server-side from Settings.
+            // Never trust percentages sent by the frontend (security fix #3).
+            // ─────────────────────────────────────────────────────────────────────
+            managerId: req.user._id || req.user.id, // Always the authenticated user, not req.body
+            revenueShare: (() => {
+                const defaults = settings?.defaultRevenueShare || { platform: 20, manager: 35, investor: 45 };
+                const platformPct = defaults.platform ?? 20;
+                // The manager's personal share can override the default, but platform % is fixed by settings
+                const managerPct = req.body.managerSharePercentage != null
+                    ? Math.min(req.body.managerSharePercentage, 100 - platformPct) // Clamp: manager can't eat platform share
+                    : (defaults.manager ?? 35);
+                const investorPct = Math.max(0, 100 - platformPct - managerPct);
+                return {
+                    investorPercentage: investorPct,
+                    managerPercentage: managerPct,
+                    platformPercentage: platformPct
+                };
+            })(),
 
             status: 'active', // Will be updated below
             penaltyConfig: penaltyConfig || settings?.defaultPenaltyConfig || {
@@ -248,6 +266,125 @@ exports.createLoan = async (req, res) => {
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
+ * UPDATE LOAN
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+exports.updateLoan = async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+        const { id } = req.params;
+        const {
+            amount,
+            interestRate,
+            interestRateMonthly,
+            duration,
+            frequency,
+            lendingType,
+            paymentDaysMode,
+            penaltyConfig,
+            startDate,
+            firstPaymentDate,
+            paidInstallments
+        } = req.body;
+
+        const loan = await Loan.findById(id).session(session);
+        if (!loan) throw new Error("Préstamo no encontrado");
+
+        // Verify if any payments have been made
+        const paymentsMade = loan.schedule.some(q => q.status === 'paid' || q.status === 'partial');
+        if (paymentsMade) {
+            throw new Error("No se puede editar un préstamo que ya tiene pagos registrados");
+        }
+
+        const effectiveRate = interestRateMonthly || interestRate || loan.interestRateMonthly;
+        const parsedAmount = parseFloat(amount) || getVal(loan.amount);
+        const parsedRate = parseFloat(effectiveRate);
+        const parsedDuration = parseInt(duration) || loan.duration;
+
+        const effectiveStartDate = startDate || loan.startDate;
+        const effectiveFirstPaymentDate = firstPaymentDate || loan.firstPaymentDate || getNextDueDate(new Date(effectiveStartDate), frequency || loan.frequency);
+
+        const { schedule, summary } = generateScheduleV3({
+            amount: parsedAmount,
+            interestRateMonthly: parsedRate,
+            duration: parsedDuration,
+            frequency: frequency || loan.frequency,
+            frequencyMode: paymentDaysMode || loan.frequencyMode,
+            lendingType: lendingType || loan.lendingType,
+            startDate: effectiveStartDate,
+            firstPaymentDate: effectiveFirstPaymentDate
+        });
+
+        // Update Loan
+        loan.amount = parsedAmount;
+        loan.currentCapital = parsedAmount;
+        loan.interestRateMonthly = parsedRate;
+        loan.duration = parsedDuration;
+        loan.initialDuration = parsedDuration;
+        loan.frequency = frequency || loan.frequency;
+        loan.frequencyMode = paymentDaysMode || loan.frequencyMode;
+        loan.lendingType = lendingType || loan.lendingType;
+        loan.startDate = effectiveStartDate;
+        loan.firstPaymentDate = effectiveFirstPaymentDate;
+        
+        if (penaltyConfig) {
+            loan.penaltyConfig = penaltyConfig;
+        }
+
+        loan.financialModel.interestTotal = summary.interestTotal;
+        loan.financialModel.interestPending = summary.interestTotal;
+        loan.schedule = schedule;
+
+        // Apply paidInstallments (Migration mode)
+        const initialPaidInstallments = Number(paidInstallments) || 0;
+        if (initialPaidInstallments > 0) {
+            let interestPaidSoFar = 0;
+            for (let i = 0; i < Math.min(initialPaidInstallments, loan.schedule.length); i++) {
+                const inst = loan.schedule[i];
+                inst.status = 'paid';
+                inst.paidAmount = inst.amount;
+                inst.interestPaid = inst.interestAmount;
+                inst.capitalPaid = inst.principalAmount;
+                inst.paidDate = new Date(inst.dueDate);
+                
+                interestPaidSoFar += parseFloat(inst.interestAmount.toString() || 0);
+            }
+
+            const paidCapital = loan.schedule.slice(0, initialPaidInstallments)
+                .reduce((sum, inst) => sum + parseFloat(inst.principalAmount.toString() || 0), 0);
+
+            loan.currentCapital -= paidCapital;
+            loan.financialModel.interestPending -= interestPaidSoFar;
+        }
+
+        await loan.save({ session });
+        
+        // Sincronizar balance dinámicamente
+        if (loan.fundingWalletId) {
+            await financeController.recalculateWalletBalance(loan.fundingWalletId);
+        }
+
+        await session.commitTransaction();
+
+        res.json({
+            success: true,
+            loan,
+            summary
+        });
+
+    } catch (error) {
+        await session.abortTransaction();
+        console.error('Error updating loan:', error);
+        res.status(500).json({ success: false, error: error.message });
+    } finally {
+        session.endSession();
+    }
+};
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
  * GET ALL LOANS
  * ═══════════════════════════════════════════════════════════════════════════
  */
@@ -315,14 +452,103 @@ exports.getLoanById = async (req, res) => {
 
         const settings = await Settings.findOne({ businessId: loan.businessId });
         const penaltyData = calculatePenaltyV3(loan, settings);
-        // Safety check for loan.penaltyConfig before accessing paidPenalty
         const paidPenaltyVal = getVal(loan.penaltyConfig?.paidPenalty);
         const pendingPenalty = Math.max(0, penaltyData.totalPenalty - paidPenaltyVal);
+
+        // ─────────────────────────────────────────────────────────────────────
+        // FINANCIAL SUMMARY — Calculated server-side so the frontend only displays
+        // ─────────────────────────────────────────────────────────────────────
+        const schedule = loan.schedule || [];
+
+        // 1. Separate base installments from "Gana Tiempo" penalty installments
+        const cuotasBase = schedule.filter(q => !(q.notes && q.notes.includes('[Penalidad Aplicada]')));
+        const cuotasPenalidad = schedule.filter(q => q.notes && q.notes.includes('[Penalidad Aplicada]'));
+
+        const capitalOriginal = getVal(loan.amount);
+        const interesTotalProyectado = cuotasBase.reduce((sum, q) => sum + getVal(q.interestAmount || q.interest), 0);
+        const totalPrestamoFinal = capitalOriginal + interesTotalProyectado;
+
+        // 2. Amounts already collected (from schedule paidAmounts)
+        const totalPagadoBase = cuotasBase.reduce((sum, q) => sum + getVal(q.paidAmount), 0);
+        const totalPagadoPenalidades = cuotasPenalidad.reduce((sum, q) => sum + getVal(q.paidAmount), 0);
+        const totalRecaudadoGlobal = totalPagadoBase + totalPagadoPenalidades;
+
+        // 3. Remaining total debt (V3 uses stored fields; legacy falls back to schedule math)
+        const hasV3Fields = loan.currentCapital !== undefined && loan.financialModel?.interestPending !== undefined;
+        const balanceTotalRestante = hasV3Fields
+            ? (getVal(loan.currentCapital) + getVal(loan.financialModel.interestPending))
+            : Math.max(0, totalPrestamoFinal - totalPagadoBase);
+
+        // 4. Overdue installments (boundary = today + 3 days to include near-due)
+        const now = new Date();
+        const boundaryDate = new Date();
+        boundaryDate.setDate(boundaryDate.getDate() + 3);
+        boundaryDate.setHours(23, 59, 59, 999);
+
+        const allOverdue = schedule.filter(q =>
+            q.status !== 'paid' &&
+            new Date(q.dueDate) <= boundaryDate
+        );
+
+        // GT Consumption Logic: each paid "Gana Tiempo" consumes one overdue slot
+        const paidGTsCount = schedule.filter(q =>
+            q.status === 'paid' && q.notes && q.notes.includes('[Penalidad Aplicada]')
+        ).length;
+        const cuotasVencidas = allOverdue.slice(paidGTsCount);
+
+        // 5. Amount overdue today
+        const balanceVencidoAHoy = loan.lendingType === 'redito'
+            ? getVal(loan.financialModel?.interestPending || 0)
+            : cuotasVencidas.reduce((sum, q) => {
+                const totalQ = getVal(q.principalAmount || q.capital) + getVal(q.interestAmount || q.interest);
+                const paidQ = getVal(q.paidAmount);
+                return sum + Math.max(0, totalQ - paidQ);
+            }, 0);
+
+        // 6. Penalty / mora
+        const mora = pendingPenalty;
+
+        // 7. Days late (normalized to UTC noon to avoid timezone drift)
+        let diasAtraso = 0;
+        if (cuotasVencidas.length > 0) {
+            const normalize = (d) => {
+                const dt = new Date(d);
+                return new Date(Date.UTC(dt.getFullYear(), dt.getMonth(), dt.getDate(), 12, 0, 0, 0));
+            };
+            const d1 = normalize(now);
+            const d2 = normalize(cuotasVencidas[0].dueDate);
+            diasAtraso = Math.round(Math.abs(d1.getTime() - d2.getTime()) / (1000 * 60 * 60 * 24));
+        }
+
+        // 8. Effective status (correct "past_due" if GT has cleared all arrears)
+        const effectiveStatus = (loan.status === 'past_due' && cuotasVencidas.length === 0)
+            ? 'active'
+            : loan.status;
+
+        // 9. Totals with mora
+        const totalVencidoAExigirHoy = balanceVencidoAHoy + mora;
+        const saldoAnticipado = balanceTotalRestante + mora;
+
+        const financialSummary = {
+            capitalOriginal,
+            interesTotalProyectado,
+            totalPrestamoFinal,
+            totalRecaudadoGlobal,
+            balanceTotalRestante,
+            balanceVencidoAHoy,
+            mora,
+            totalVencidoAExigirHoy,
+            saldoAnticipado,
+            diasAtraso,
+            cuotasVencidasCount: cuotasVencidas.length,
+            effectiveStatus
+        };
 
         res.json({
             ...loan.toObject(),
             currentPenalty: pendingPenalty,
-            penaltyBreakdown: penaltyData.breakdown
+            penaltyBreakdown: penaltyData.breakdown,
+            financialSummary
         });
 
     } catch (error) {
@@ -441,6 +667,26 @@ exports.registerPayment = async (req, res) => {
             { session }
         );
 
+        // ─────────────────────────────────────────────────────────────────────────
+        // BALANCE SNAPSHOT — Calculate the remaining balance right after this payment
+        // so the PDF receipt can display it without iterating the schedule/history.
+        // ─────────────────────────────────────────────────────────────────────────
+        const balanceAfterPayment = (() => {
+            if (loan.lendingType === 'redito') {
+                // For redito: capital + pending interest
+                return getVal(loan.currentCapital) + getVal(loan.financialModel?.interestPending || 0);
+            }
+            // For fixed/amortization: currentCapital + interestPending from financialModel
+            const cap = getVal(loan.currentCapital);
+            const int = getVal(loan.financialModel?.interestPending || 0);
+            return Math.max(0, cap + int);
+        })();
+
+        // Count of paid quotas (base quotas only, excluding Gana Tiempo penalties)
+        const paidQuotasCount = (loan.schedule || []).filter(q =>
+            q.status === 'paid' && !(q.notes && q.notes.includes('[Penalidad Aplicada]'))
+        ).length;
+
         // Create payment record
         const payment = new PaymentV2({
             loanId: loan._id,
@@ -465,7 +711,9 @@ exports.registerPayment = async (req, res) => {
                     otherCharges: 0
                 }
             },
-            businessId: loan.businessId
+            businessId: loan.businessId,
+            balanceAfter: balanceAfterPayment,
+            quotaNumberAtTime: paidQuotasCount
         });
 
         await payment.save({ session });

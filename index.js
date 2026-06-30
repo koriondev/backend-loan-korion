@@ -27,6 +27,23 @@ app.use(helmet({
   contentSecurityPolicy: false, // Deshabilitar CSP para no romper el frontend; configurar por separado si se necesita
 }));
 
+// --- CORS CONFIGURATION (MUST BE BEFORE RATE LIMITERS) ---
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',')
+  : ['http://localhost:5173'];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.warn(`[CORS] Intento de acceso bloqueado desde: ${origin}`);
+      callback(new Error('Bloqueado por CORS'));
+    }
+  },
+  credentials: true
+}));
+
 // --- SEGURIDAD: Rate Limiting Global ---
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
@@ -47,23 +64,7 @@ const authLimiter = rateLimit({
 });
 app.use('/api/auth/', authLimiter);
 
-// Middlewares and Security
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',')
-  : ['http://localhost:5173'];
 
-app.use(cors({
-  origin: function (origin, callback) {
-    // Permitir peticiones sin origen (como Postman) o si está en la lista blanca
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      console.warn(`[CORS] Intento de acceso bloqueado desde: ${origin}`);
-      callback(new Error('Bloqueado por CORS'));
-    }
-  },
-  credentials: true
-}));
 
 app.use(express.json());
 

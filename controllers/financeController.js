@@ -220,8 +220,21 @@ exports.getHistory = async (req, res) => {
       ...(req.businessFilter || { businessId: req.user.businessId })
     };
 
-    // Only allow archived transactions when viewing a specific loan details history
-    if (!req.query.loanId) {
+    // Filter by specific loan if requested
+    if (req.query.loanId) {
+      const loanIdStr = req.query.loanId;
+      // The transaction might be linked via legacy 'loan', 'loanV2', 'loanV3', or inside metadata
+      queryFilter.$or = [
+        { loan: loanIdStr },
+        { loanV2: loanIdStr },
+        { loanV3: loanIdStr },
+        { 'metadata.loanId': loanIdStr },
+        // Also support partial matches in description for very old legacy imports
+        { description: { $regex: loanIdStr.slice(-6), $options: 'i' } }
+      ];
+    } else {
+      // Only hide archived transactions if we are viewing the general history,
+      // not when looking at a specific loan's details.
       queryFilter.isArchived = { $ne: true };
     }
 

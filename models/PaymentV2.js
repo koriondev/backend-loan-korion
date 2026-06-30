@@ -108,7 +108,23 @@ const PaymentV2Schema = new mongoose.Schema({
   isArchived: {
     type: Boolean,
     default: false
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // BALANCE SNAPSHOT — Balance remaining on the loan right after this payment
+  // Stored at payment time so the PDF receipt never needs to recalculate it.
+  // ─────────────────────────────────────────────────────────────────────────
+  balanceAfter: {
+    type: Number,
+    default: null
+  },
+
+  // Quota number at the time of this payment (1-indexed count of paid quotas)
+  quotaNumberAtTime: {
+    type: Number,
+    default: null
   }
+
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

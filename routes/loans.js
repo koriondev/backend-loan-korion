@@ -52,6 +52,7 @@ router.post('/:id/reject', loanController.rejectLoan);
 
 router.put('/:id/archive', loanController.archiveLoan);
 router.put('/:id/restore', loanController.restoreLoan);
+router.put('/:id', loanController.updateLoan);
 
 // Catch-all for getting a single loan record
 router.get('/:id', loanController.getLoanById);

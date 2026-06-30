@@ -138,10 +138,12 @@ exports.getGeneralStats = async (req, res) => {
       });
     }
 
-    // --- 5. CONTEO DE CLIENTES Y LÍMITES DE NEGOCIO ---
-    const [clientsCount, business] = await Promise.all([
+    // --- 5. CONTEO DE CLIENTES, PRÉSTAMOS Y LÍMITES DE NEGOCIO ---
+    const [clientsCount, business, activeLoansCount, totalLoansCount] = await Promise.all([
       require('../models/Client').countDocuments({ businessId: businessIdStr }),
-      Business.findById(businessId).lean()
+      Business.findById(businessId).lean(),
+      Loan.countDocuments({ status: { $in: ['active', 'past_due'] }, ...bizFilter }),
+      Loan.countDocuments({ ...bizFilter })
     ]);
 
     // --- 6. PRÓXIMOS COBROS (PENDING INSTALLMENTS) ---
@@ -241,6 +243,8 @@ exports.getGeneralStats = async (req, res) => {
       lateLoans: stats.lateLoans,
       availableCapital: totalLiquidity,
       clientsCount,
+      activeLoansCount,
+      totalLoansCount,
       limits: business ? business.limits : null,
       chartData: formattedMonthlyData, // Ahora enviamos 12 meses
       weeklyChartData: formattedChartData, // Mantenemos la anterior por si acaso
