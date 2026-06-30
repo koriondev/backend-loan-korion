@@ -207,10 +207,116 @@ const getPrevDateInternal = (fromDate, frequency) => {
     return adjustToNextWorkingDay(date);
 };
 
+const recalculateRemainingSchedule = (loan, newRateMonthly) => {
+    const getVal = (v) => {
+        if (v === null || v === undefined) return 0;
+        if (typeof v === 'object' && v.$numberDecimal) return parseFloat(v.$numberDecimal);
+        if (typeof v === 'object' && v.constructor.name === 'Decimal128') return parseFloat(v.toString());
+        return parseFloat(v) || 0;
+    };
+
+    const principal = getVal(loan.amount);
+    const newRate = parseFloat(newRateMonthly);
+    const periodicRate = getPeriodicRate(newRate, loan.frequency);
+    const lendingType = loan.lendingType;
+
+    // Split schedule
+    const paidPart = loan.schedule.filter(q => q.status === 'paid' || q.status === 'partial');
+    const unpaidPart = loan.schedule.filter(q => q.status !== 'paid' && q.status !== 'partial');
+
+    if (unpaidPart.length === 0) {
+        return {
+            schedule: loan.schedule,
+            interestTotal: getVal(loan.financialModel.interestTotal),
+            interestPending: 0
+        };
+    }
+
+    // Balance of last paid installment
+    let previousBalance = principal;
+    if (paidPart.length > 0) {
+        const lastPaid = paidPart[paidPart.length - 1];
+        previousBalance = getVal(lastPaid.balance);
+    }
+
+    let currentBalance = previousBalance;
+
+    // Recalculate unpaid part
+    if (lendingType === 'amortization') {
+        const nRemaining = unpaidPart.length;
+        const quotaValue = calculateEMI(currentBalance, periodicRate, nRemaining);
+
+        unpaidPart.forEach((inst, index) => {
+            let interest = currentBalance * periodicRate;
+            let capital = quotaValue - interest;
+            currentBalance -= capital;
+
+            if (index === unpaidPart.length - 1) {
+                if (Math.abs(currentBalance) < 1) {
+                    capital += currentBalance;
+                    interest = Math.max(0, quotaValue - capital);
+                    currentBalance = 0;
+                }
+            }
+
+            inst.principalAmount = mongoose.Types.Decimal128.fromString(Math.max(0, capital).toFixed(2));
+            inst.interestAmount = mongoose.Types.Decimal128.fromString(Math.max(0, interest).toFixed(2));
+            inst.amount = mongoose.Types.Decimal128.fromString((getVal(inst.principalAmount) + getVal(inst.interestAmount)).toFixed(2));
+            inst.balance = mongoose.Types.Decimal128.fromString(Math.max(0, currentBalance).toFixed(2));
+        });
+    } else if (lendingType === 'fixed') {
+        const nTotal = loan.schedule.length;
+        const capitalPerPeriod = principal / nTotal;
+        const interestPerPeriod = principal * periodicRate;
+        const quotaValue = capitalPerPeriod + interestPerPeriod;
+
+        unpaidPart.forEach((inst, index) => {
+            currentBalance -= capitalPerPeriod;
+            if (index === unpaidPart.length - 1) {
+                if (Math.abs(currentBalance) < 1) {
+                    currentBalance = 0;
+                }
+            }
+
+            inst.principalAmount = mongoose.Types.Decimal128.fromString(capitalPerPeriod.toFixed(2));
+            inst.interestAmount = mongoose.Types.Decimal128.fromString(interestPerPeriod.toFixed(2));
+            inst.amount = mongoose.Types.Decimal128.fromString(quotaValue.toFixed(2));
+            inst.balance = mongoose.Types.Decimal128.fromString(Math.max(0, currentBalance).toFixed(2));
+        });
+    } else {
+        // redito
+        const interestPerPeriod = principal * periodicRate;
+
+        unpaidPart.forEach((inst, index) => {
+            const isLast = (paidPart.length + index + 1) === loan.schedule.length;
+            const capital = isLast ? principal : 0;
+            const quota = capital + interestPerPeriod;
+
+            inst.principalAmount = mongoose.Types.Decimal128.fromString(capital.toFixed(2));
+            inst.interestAmount = mongoose.Types.Decimal128.fromString(interestPerPeriod.toFixed(2));
+            inst.amount = mongoose.Types.Decimal128.fromString(quota.toFixed(2));
+            inst.balance = mongoose.Types.Decimal128.fromString(principal.toFixed(2));
+        });
+    }
+
+    // Combine again
+    const newSchedule = [...paidPart, ...unpaidPart];
+
+    const totalInterestValue = newSchedule.reduce((acc, s) => acc + getVal(s.interestAmount), 0);
+    const pendingInterestValue = unpaidPart.reduce((acc, s) => acc + getVal(s.interestAmount), 0);
+
+    return {
+        schedule: newSchedule,
+        interestTotal: parseFloat(totalInterestValue.toFixed(2)),
+        interestPending: parseFloat(pendingInterestValue.toFixed(2))
+    };
+};
+
 module.exports = {
     generateScheduleV3,
     isWorkingDay: (date) => !isNonWorkingDay(date),
     adjustToNextWorkingDay,
     getNextDueDate: getNextDateInternal,
-    getPrevDueDate: getPrevDateInternal
+    getPrevDueDate: getPrevDateInternal,
+    recalculateRemainingSchedule
 };

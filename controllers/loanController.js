@@ -12,7 +12,7 @@ const PaymentV2 = require('../models/PaymentV2');
 const Client = require('../models/Client');
 const Wallet = require('../models/Wallet');
 const Settings = require('../models/Settings');
-const { generateScheduleV3, getNextDueDate } = require('../engines/amortizationEngine');
+const { generateScheduleV3, getNextDueDate, recalculateRemainingSchedule } = require('../engines/amortizationEngine');
 const { calculatePenaltyV3 } = require('../engines/penaltyEngine');
 const { distributePayment, applyPaymentToLoan, validatePaymentAmount } = require('../engines/paymentEngine');
 const XLSX = require('xlsx');
@@ -295,7 +295,46 @@ exports.updateLoan = async (req, res) => {
         // Verify if any payments have been made
         const paymentsMade = loan.schedule.some(q => q.status === 'paid' || q.status === 'partial');
         if (paymentsMade) {
-            throw new Error("No se puede editar un préstamo que ya tiene pagos registrados");
+            // Check if they tried to change forbidden fields
+            const isAmountChanged = amount && parseFloat(amount) !== getVal(loan.amount);
+            const isDurationChanged = duration && parseInt(duration) !== loan.duration;
+            const isFrequencyChanged = frequency && frequency !== loan.frequency;
+            const isStartDateChanged = startDate && new Date(startDate).getTime() !== new Date(loan.startDate).getTime();
+            const isLendingTypeChanged = lendingType && lendingType !== loan.lendingType;
+            
+            if (isAmountChanged || isDurationChanged || isFrequencyChanged || isStartDateChanged || isLendingTypeChanged) {
+                throw new Error("No se permite cambiar el monto, duración, frecuencia, tipo de préstamo o fecha de inicio en un préstamo que ya tiene pagos registrados. Solo se puede actualizar la tasa de interés.");
+            }
+            
+            // Recalculate using the remaining schedule helper
+            const newRate = parseFloat(interestRateMonthly || interestRate || loan.interestRateMonthly);
+            const { schedule: newSchedule, interestTotal, interestPending } = recalculateRemainingSchedule(loan, newRate);
+            
+            loan.interestRateMonthly = newRate;
+            loan.financialModel.interestTotal = interestTotal;
+            loan.financialModel.interestPending = interestPending;
+            loan.schedule = newSchedule;
+            
+            if (penaltyConfig) {
+                loan.penaltyConfig = penaltyConfig;
+            }
+            
+            await loan.save({ session });
+            
+            if (loan.fundingWalletId) {
+                await financeController.recalculateWalletBalance(loan.fundingWalletId);
+            }
+            
+            await session.commitTransaction();
+            
+            return res.json({
+                success: true,
+                loan,
+                summary: {
+                    interestTotal,
+                    totalToPay: getVal(loan.amount) + interestTotal
+                }
+            });
         }
 
         const effectiveRate = interestRateMonthly || interestRate || loan.interestRateMonthly;
