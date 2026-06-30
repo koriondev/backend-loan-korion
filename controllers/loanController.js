@@ -305,6 +305,21 @@ exports.updateLoan = async (req, res) => {
             if (isAmountChanged || isDurationChanged || isFrequencyChanged || isStartDateChanged || isLendingTypeChanged) {
                 throw new Error("No se permite cambiar el monto, duración, frecuencia, tipo de préstamo o fecha de inicio en un préstamo que ya tiene pagos registrados. Solo se puede actualizar la tasa de interés.");
             }
+
+            // Apply paidInstallments adjustment if provided in body
+            const newPaidInstallments = Number(paidInstallments);
+            if (!isNaN(newPaidInstallments) && newPaidInstallments > 0) {
+                for (let i = 0; i < Math.min(newPaidInstallments, loan.schedule.length); i++) {
+                    const inst = loan.schedule[i];
+                    if (inst.status !== 'paid') {
+                        inst.status = 'paid';
+                        inst.paidAmount = inst.amount;
+                        inst.interestPaid = inst.interestAmount;
+                        inst.capitalPaid = inst.principalAmount;
+                        inst.paidDate = new Date(inst.dueDate);
+                    }
+                }
+            }
             
             // Recalculate using the remaining schedule helper
             const newRate = parseFloat(interestRateMonthly || interestRate || loan.interestRateMonthly);
@@ -312,8 +327,15 @@ exports.updateLoan = async (req, res) => {
             
             loan.interestRateMonthly = newRate;
             loan.financialModel.interestTotal = interestTotal;
-            loan.financialModel.interestPending = interestPending;
             loan.schedule = newSchedule;
+
+            // Recalculate currentCapital and interestPending dynamically from the new schedule
+            const totalPaidCapital = newSchedule
+                .filter(q => q.status === 'paid')
+                .reduce((sum, q) => sum + getVal(q.capitalPaid || q.principalAmount), 0);
+            
+            loan.currentCapital = Math.max(0, getVal(loan.amount) - totalPaidCapital);
+            loan.financialModel.interestPending = interestPending;
             
             if (penaltyConfig) {
                 loan.penaltyConfig = penaltyConfig;
@@ -507,26 +529,26 @@ exports.getLoanById = async (req, res) => {
         const interesTotalProyectado = cuotasBase.reduce((sum, q) => sum + getVal(q.interestAmount || q.interest), 0);
         const totalPrestamoFinal = capitalOriginal + interesTotalProyectado;
 
-        // 2. Amounts already collected (from schedule paidAmounts)
+        // 2. Amounts already collected (from schedule paidAmounts) + paid penalty (mora)
         const totalPagadoBase = cuotasBase.reduce((sum, q) => sum + getVal(q.paidAmount), 0);
         const totalPagadoPenalidades = cuotasPenalidad.reduce((sum, q) => sum + getVal(q.paidAmount), 0);
-        const totalRecaudadoGlobal = totalPagadoBase + totalPagadoPenalidades;
+        const totalRecaudadoGlobal = totalPagadoBase + totalPagadoPenalidades + paidPenaltyVal;
 
-        // 3. Remaining total debt (V3 uses stored fields; legacy falls back to schedule math)
-        const hasV3Fields = loan.currentCapital !== undefined && loan.financialModel?.interestPending !== undefined;
-        const balanceTotalRestante = hasV3Fields
-            ? (getVal(loan.currentCapital) + getVal(loan.financialModel.interestPending))
-            : Math.max(0, totalPrestamoFinal - totalPagadoBase);
+        // 3. Remaining total debt calculated directly from schedule to avoid desynchronization:
+        const balanceTotalRestante = schedule
+            .filter(q => q.status !== 'paid')
+            .reduce((sum, q) => sum + Math.max(0, getVal(q.amount) - getVal(q.paidAmount)), 0);
 
-        // 4. Overdue installments (boundary = today + 3 days to include near-due)
-        const now = new Date();
-        const boundaryDate = new Date();
-        boundaryDate.setDate(boundaryDate.getDate() + 3);
-        boundaryDate.setHours(23, 59, 59, 999);
+        // 4. Overdue installments (dueDate strictly before today's date in UTC)
+        const getUTCDate = (d) => {
+            const date = new Date(d);
+            return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0));
+        };
+        const todayUTC = getUTCDate(new Date());
 
         const allOverdue = schedule.filter(q =>
             q.status !== 'paid' &&
-            new Date(q.dueDate) <= boundaryDate
+            getUTCDate(q.dueDate) < todayUTC
         );
 
         // GT Consumption Logic: each paid "Gana Tiempo" consumes one overdue slot
