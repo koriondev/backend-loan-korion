@@ -51,33 +51,45 @@ const distributePaymentV3 = (loan, amount, currentPenalty) => {
             newStatus: inst.status
         };
 
-        // 2a. Pay Interest
+        // 2a. Pay Interest & Capital with 10 pesos tolerance
         const rawInterestTotal = inst.interestAmount != null ? inst.interestAmount : inst.interest;
         const pendingInterest = getVal(rawInterestTotal) - getVal(inst.interestPaid);
-        if (pendingInterest > 0.01) {
-            const interestPayment = Math.min(remainingPayment, pendingInterest);
-            installmentUpdate.interestPaid = interestPayment;
-            distribution.appliedInterest += interestPayment;
-            remainingPayment -= interestPayment;
-        }
 
-        // 2b. Pay Capital
         const rawCapitalTotal = inst.principalAmount != null ? inst.principalAmount : inst.capital;
-        if (remainingPayment > 0.01) {
-            const pendingCapital = getVal(rawCapitalTotal) - getVal(inst.capitalPaid);
-            if (pendingCapital > 0.01) {
-                const capitalPayment = Math.min(remainingPayment, pendingCapital);
-                installmentUpdate.capitalPaid = capitalPayment;
-                distribution.appliedCapital += capitalPayment;
-                remainingPayment -= capitalPayment;
+        const pendingCapital = getVal(rawCapitalTotal) - getVal(inst.capitalPaid);
+
+        const pendingQuota = pendingInterest + pendingCapital;
+
+        let applyInterest = 0;
+        let applyCapital = 0;
+
+        if (remainingPayment > 0.01 && remainingPayment < pendingQuota && remainingPayment >= (pendingQuota - 10.00)) {
+            // We fully pay this installment with tolerance!
+            applyInterest = pendingInterest;
+            applyCapital = pendingCapital;
+            remainingPayment = 0; // The payment is fully consumed
+        } else {
+            // Standard partial payment flow
+            if (pendingInterest > 0.01) {
+                applyInterest = Math.min(remainingPayment, pendingInterest);
+                remainingPayment -= applyInterest;
+            }
+            if (remainingPayment > 0.01 && pendingCapital > 0.01) {
+                applyCapital = Math.min(remainingPayment, pendingCapital);
+                remainingPayment -= applyCapital;
             }
         }
 
-        // Determine new status
+        installmentUpdate.interestPaid = applyInterest;
+        installmentUpdate.capitalPaid = applyCapital;
+        distribution.appliedInterest += applyInterest;
+        distribution.appliedCapital += applyCapital;
+
+        // Determine new status with 10 pesos tolerance
         const totalInterestPaid = getVal(inst.interestPaid) + installmentUpdate.interestPaid;
         const totalCapitalPaid = getVal(inst.capitalPaid) + installmentUpdate.capitalPaid;
 
-        if (totalInterestPaid >= (getVal(rawInterestTotal) - 0.05) && totalCapitalPaid >= (getVal(rawCapitalTotal) - 0.05)) {
+        if (totalInterestPaid >= (getVal(rawInterestTotal) - 10.00) && totalCapitalPaid >= (getVal(rawCapitalTotal) - 10.00)) {
             installmentUpdate.newStatus = 'paid';
         } else if (totalInterestPaid > 0.01 || totalCapitalPaid > 0.01) {
             installmentUpdate.newStatus = 'partial';
